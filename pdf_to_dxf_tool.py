@@ -220,19 +220,22 @@ class PDFtoDXFConverter(QWidget):
                         dxf_text_x = (start_x + offset_x) * PT_TO_MM
                         dxf_text_y = (height - current_y) * PT_TO_MM
                         
-                        # 【终极修复方案】：彻底废除可能引起版本报错的方法
-                        # 直接把坐标传入 'insert' 属性中，这是 ezdxf 最天然、永远不会报错的原生写法
                         msp.add_text(
                             clean_text, 
                             dxfattribs={
-                                'insert': (dxf_text_x, dxf_text_y), # 直接定义文字起点位置
+                                'insert': (dxf_text_x, dxf_text_y),
                                 'height': 3.5, 
+                                'style': 'STANDARD', # 强制文本关联默认的 STANDARD 样式
                                 'layer': 'TEXT_LAYER'
                             }
                         )
 
-            # 3. 设置默认字体支持中文，防止 CAD 打开全是问号
-            doc.styles.new('STANDARD', dxfattribs={'font': 'SimSun.ttf'}) # 宋体
+            # 【修复点】：不使用 styles.new()，而是获取已存在的 STANDARD 样式并修改其字体
+            if 'STANDARD' in doc.styles:
+                standard_style = doc.styles.get('STANDARD')
+                standard_style.dxf.font = 'SimSun.ttf' # 改为宋体支持中文
+            else:
+                doc.styles.new('STANDARD', dxfattribs={'font': 'SimSun.ttf'})
 
             doc.saveas(dxf_path)
             QMessageBox.information(self, "成功", f"转换完成！\n尺寸已自动校准为毫米(mm)\n且文字已成功提取。\n保存路径：{dxf_path}")
