@@ -15,6 +15,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
+        matplotlib
         pip install PyQt5 PyMuPDF ezdxf pyinstaller
 
     - name: Build with PyInstaller
