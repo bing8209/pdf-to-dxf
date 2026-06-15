@@ -1,12 +1,11 @@
 import sys
 import os
-import math
 import fitz  # PyMuPDF
 import ezdxf
-# 引入 DXF 渲染核心模块（删除了不稳定的 config 导入）
-from ezdxf.addons.drawing import RenderContext, Frontend
-from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
+import math
 import matplotlib.pyplot as plt
+from matplotlib.path import Path
+import matplotlib.patches as patches
 
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, QTabWidget,
                              QLineEdit, QFileDialog, QVBoxLayout, QHBoxLayout, QMessageBox)
@@ -265,7 +264,7 @@ class UniversalConverter(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
-    # ==== 核心算法2：DXF 转 PDF（💡 彻底修复崩溃、黑线与转换速度） ====
+    # ==== 核心算法2：DXF 转 PDF（💡 彻底重构：底层几何坐标清洗映射法） ====
     def convert_dxf_to_pdf(self):
         dxf_path = self.txt_dxf_input.text()
         output_dir = self.txt_dxf_output.text()
@@ -281,51 +280,82 @@ class UniversalConverter(QWidget):
         pdf_path = os.path.join(output_dir, f"{base_name}.pdf")
 
         try:
-            # 1. 加载文件
+            # 1. 直接读取 DXF 数据
             doc = ezdxf.readfile(dxf_path)
             msp = doc.modelspace()
 
-            # 🛠️ 【暴力洗白背景、黑化线条逻辑】：
-            # 强行将图层颜色、所有的直线、多段线、圆弧的颜色改为黑(ACI=0或者7)
-            for layer in doc.layers:
-                layer.color = 7  # 7号颜色在白色背景下会自动识别渲染为绝对的纯黑色
+            # 2. 建立最高保真度的纯白画布
+            fig, ax = plt.subplots(figsize=(12, 12), facecolor='#FFFFFF')
+            ax.set_facecolor('#FFFFFF')
+            ax.set_axis_off()
+
+            # 3. 极其稳定的底层几何数据提取并绘制
+            # 我们直接跳过 ezdxf 渲染器，直接抓取线条节点坐标，用纯黑色(black)+极细线(lw=0.4)亲自动手画
             for entity in msp:
-                entity.dxf.color = 7
+                dxftype = entity.dxftype()
+                
+                # 处理普通单条直线
+                if dxftype == 'LINE':
+                    start = entity.dxf.start
+                    end = entity.dxf.end
+                    ax.plot([start.x, end.x], [start.y, end.y], color='black', linewidth=0.4, linestyle='-')
+                    
+                # 处理多段线 / 折线 / 裁片外轮廓
+                elif dxftype in ('LWPOLYLINE', 'POLYLINE'):
+                    points = []
+                    for vertex in entity.vertices():
+                        points.append((vertex[0], vertex[1]))
+                    if points:
+                        x_coords, y_coords = zip(*points)
+                        # 💡 如果多段线是闭合的，让它自动闭合
+                        if entity.closed:
+                            x_coords = list(x_coords) + [x_coords[0]]
+                            y_coords = list(y_coords) + [y_coords[0]]
+                        # 🔒 强力封死：绝对只有线（color='black', lw=0.4），坚决不画任何点点！
+                        ax.plot(x_coords, y_coords, color='black', linewidth=0.4, linestyle='-')
 
-            # 2. 建立极简白色画布
-            fig = plt.figure(facecolor='#FFFFFF')  # 直接指定画布背景色
-            ax = fig.add_axes([0, 0, 1, 1], facecolor='#FFFFFF')
-            ax.set_axis_off() 
+                # 处理圆或小圆孔
+                elif dxftype == 'CIRCLE':
+                    center = entity.dxf.center
+                    radius = entity.dxf.radius
+                    circle_patch = patches.Circle((center.x, center.y), radius, edgecolor='black', facecolor='none', linewidth=0.4)
+                    ax.add_patch(circle_patch)
 
-            # 3. 配置高稳定性渲染上下文
-            ctx = RenderContext(doc)
-            ctx.current_backend_color = "#FFFFFF" 
-            ctx.current_layer_color = "#000000"
-            
-            # 关闭节点圆点的核心属性
-            if hasattr(ctx, 'show_points'):
-                ctx.show_points = False 
+                # 处理圆弧
+                elif dxftype == 'ARC':
+                    center = entity.dxf.center
+                    radius = entity.dxf.radius
+                    start_angle = math.radians(entity.dxf.start_angle)
+                    end_angle = math.radians(entity.dxf.end_angle)
+                    # 细分圆弧
+                    num_segments = 30
+                    if end_angle < start_angle:
+                        end_angle += 2 * math.pi
+                    arc_x = []
+                    arc_y = []
+                    for i in range(num_segments + 1):
+                        angle = start_angle + (end_angle - start_angle) * (i / num_segments)
+                        arc_x.append(center.x + radius * math.cos(angle))
+                        arc_y.append(center.y + radius * math.sin(angle))
+                    ax.plot(arc_x, arc_y, color='black', linewidth=0.4)
 
-            backend = MatplotlibBackend(ax)
-            # 服装线条极细丝滑配置
-            backend.line_width_scale = 0.15 
+            # 4. 自动缩放自适应裁片大小，防止线条超出画布
+            ax.autoscale_view()
+            ax.set_aspect('equal', adjustable='box')
 
-            # 🚀 【安全大提速渲染点】：不传容易出错的 config 参数，只用最底层的 draw_layout
-            Frontend(ctx, backend).draw_layout(msp, finalize=True)
-
-            # 4. 高效保存（DPI=150足够丝滑，且速度极快）
+            # 5. 秒级直接存储为高清矢量 PDF（由于没有多余计算，速度会极其恐怖）
             fig.savefig(
                 pdf_path, 
                 format='pdf', 
                 bbox_inches='tight', 
-                pad_inches=0, 
+                pad_inches=0.1, 
                 facecolor='#FFFFFF', 
                 edgecolor='none',
-                dpi=150
+                dpi=100  # 纯几何线段不依赖高DPI，100就保证无限放大完全光滑
             )
             plt.close(fig) 
 
-            QMessageBox.information(self, "成功", f"DXF 转 PDF 成功！\n已完美解决报错，纯白背景+清爽黑细线秒级导出。\n保存路径：{pdf_path}")
+            QMessageBox.information(self, "成功", f"DXF 转 PDF 成功！\n【底层重构完毕】：纯白背景、无圆点、线条丝滑极细、转换极快！\n保存路径：{pdf_path}")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
