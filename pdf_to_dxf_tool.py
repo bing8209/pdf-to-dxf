@@ -176,7 +176,6 @@ class UniversalConverter(QWidget):
                 self.txt_dxf_input.setText(file_path)
                 self.txt_dxf_output.setText(os.path.dirname(file_path))
 
-    # ==== 核心算法1：PDF 转 DXF（已修复遗漏的语法错误） ====
     def convert_pdf_to_dxf(self):
         pdf_path = self.txt_pdf_input.text()
         output_dir = self.txt_pdf_output.text()
@@ -264,7 +263,7 @@ class UniversalConverter(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
-    # ==== 核心算法2：DXF 转 PDF（自动破壳+纯黑丝滑极细线） ====
+    # ==== 核心算法2：DXF 转 PDF（💡 【彻底修复 List 括号报错】稳定版） ====
     def convert_dxf_to_pdf(self):
         dxf_path = self.txt_dxf_input.text()
         output_dir = self.txt_dxf_output.text()
@@ -287,19 +286,30 @@ class UniversalConverter(QWidget):
             ax.set_facecolor('#FFFFFF')
             ax.set_axis_off()
 
-            # 内部高纯净连线画图模块
+            # 内部高保真连线模块
             def draw_geometry(entity):
                 dxftype = entity.dxftype()
                 if dxftype == 'LINE':
                     start, end = entity.dxf.start, entity.dxf.end
                     ax.plot([start.x, end.x], [start.y, end.y], color='black', linewidth=0.4)
+                    
                 elif dxftype in ('LWPOLYLINE', 'POLYLINE'):
-                    points = [(v[0], v[1]) for v in entity.vertices()]
+                    # 💡 【核心修复点】：不再调用有风险的 .vertices()
+                    # 换用 ezdxf 自带的高稳定属性，直接提取纯净的坐标列表
+                    try:
+                        if dxftype == 'LWPOLYLINE':
+                            points = [(v[0], v[1]) for v in entity.get_points()]
+                        else: # 老款 POLYLINE
+                            points = [(v.dxf.location.x, v.dxf.location.y) for v in entity.vertices]
+                    except Exception:
+                        points = [(v[0], v[1]) for v in getattr(entity, 'vertices', [])]
+
                     if points:
                         x_coords, y_coords = zip(*points)
                         if entity.closed:
                             x_coords, y_coords = list(x_coords) + [x_coords[0]], list(y_coords) + [y_coords[0]]
-                        ax.plot(x_coords, y_coords, color='black', linewidth=0.4) 
+                        ax.plot(x_coords, y_coords, color='black', linewidth=0.4) # 锁死无圆点粗线
+                        
                 elif dxftype == 'CIRCLE':
                     center, radius = entity.dxf.center, entity.dxf.radius
                     ax.add_patch(patches.Circle((center.x, center.y), radius, edgecolor='black', facecolor='none', linewidth=0.4))
@@ -311,7 +321,7 @@ class UniversalConverter(QWidget):
                     arc_y = [center.y + radius * math.sin(s_ang + (e_ang - s_ang) * (i / 30)) for i in range(31)]
                     ax.plot(arc_x, arc_y, color='black', linewidth=0.4)
 
-            # 强行炸开所有块并读取
+            # 自动破壳遍历
             for entity in msp:
                 if entity.dxftype() == 'INSERT':
                     try:
@@ -337,7 +347,7 @@ class UniversalConverter(QWidget):
             )
             plt.close(fig) 
 
-            QMessageBox.information(self, "成功", f"DXF 转 PDF 成功！\n【底层重构完毕】：纯白背景、无圆点、线条丝滑极细、转换极快！\n保存路径：{pdf_path}")
+            QMessageBox.information(self, "成功", f"DXF 转 PDF 成功！\n【全兼容无错版】：纯白背景、无圆点、线条丝滑极细。\n保存路径：{pdf_path}")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
