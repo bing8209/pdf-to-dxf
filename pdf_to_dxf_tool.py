@@ -23,7 +23,6 @@ class UniversalConverter(QWidget):
         self.resize(600, 350)
         self.setAcceptDrops(True)
 
-        # 样式表美化
         self.setStyleSheet("""
             QWidget {
                 font-family: 'Microsoft YaHei', sans-serif;
@@ -69,13 +68,9 @@ class UniversalConverter(QWidget):
             }
         """)
 
-        # 主布局
         main_layout = QVBoxLayout()
-        
-        # 创建选项卡
         self.tabs = QTabWidget()
         
-        # 初始化两个页面
         self.tab1 = QWidget()
         self.tab2 = QWidget()
         
@@ -88,10 +83,8 @@ class UniversalConverter(QWidget):
         main_layout.addWidget(self.tabs)
         self.setLayout(main_layout)
 
-    # ---- 页面一：PDF 转 DXF 界面 ----
     def setup_pdf_to_dxf_tab(self):
         layout = QVBoxLayout()
-        
         self.p2d_drop_label = QLabel("【PDF → DXF】 将 PDF 拖拽到此处", self)
         self.p2d_drop_label.setAlignment(Qt.AlignCenter)
         self.p2d_drop_label.setStyleSheet("border: 2px dashed #0078d7; border-radius: 6px; background-color: #e6f2ff; color: #0078d7; margin: 10px; min-height: 80px;")
@@ -119,13 +112,10 @@ class UniversalConverter(QWidget):
         btn_convert.setStyleSheet("background-color: #2ea44f; font-weight: bold; padding: 10px; font-size: 15px;")
         btn_convert.clicked.connect(self.convert_pdf_to_dxf)
         layout.addWidget(btn_convert)
-        
         self.tab1.setLayout(layout)
 
-    # ---- 页面二：DXF 转 PDF 界面 ----
     def setup_dxf_to_pdf_tab(self):
         layout = QVBoxLayout()
-        
         self.d2p_drop_label = QLabel("【DXF → PDF】 将 DXF 拖拽到此处", self)
         self.d2p_drop_label.setAlignment(Qt.AlignCenter)
         self.d2p_drop_label.setStyleSheet("border: 2px dashed #2ea44f; border-radius: 6px; background-color: #e8f5e9; color: #2ea44f; margin: 10px; min-height: 80px;")
@@ -153,10 +143,8 @@ class UniversalConverter(QWidget):
         btn_convert.setStyleSheet("background-color: #0078d7; font-weight: bold; padding: 10px; font-size: 15px;")
         btn_convert.clicked.connect(self.convert_dxf_to_pdf)
         layout.addWidget(btn_convert)
-        
         self.tab2.setLayout(layout)
 
-    # ---- 通用界面交互逻辑 ----
     def select_file(self, line_edit, file_filter, dir_edit):
         file_path, _ = QFileDialog.getOpenFileName(self, "选择文件", "", file_filter)
         if file_path:
@@ -169,12 +157,10 @@ class UniversalConverter(QWidget):
         if dir_path:
             line_edit.setText(dir_path)
 
-    # ---- 拖拽逻辑支持（自动识别当前处于哪个Tab） ----
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             file_path = event.mimeData().urls()[0].toLocalFile().lower()
             current_tab = self.tabs.currentIndex()
-            
             if current_tab == 0 and file_path.endswith('.pdf'):
                 event.acceptProposedAction()
             elif current_tab == 1 and file_path.endswith('.dxf'):
@@ -185,7 +171,6 @@ class UniversalConverter(QWidget):
         if urls:
             file_path = urls[0].toLocalFile()
             current_tab = self.tabs.currentIndex()
-            
             if current_tab == 0:
                 self.txt_pdf_input.setText(file_path)
                 self.txt_pdf_output.setText(os.path.dirname(file_path))
@@ -193,7 +178,6 @@ class UniversalConverter(QWidget):
                 self.txt_dxf_input.setText(file_path)
                 self.txt_dxf_output.setText(os.path.dirname(file_path))
 
-    # ==== 核心算法1：PDF 转 DXF ====
     def convert_pdf_to_dxf(self):
         pdf_path = self.txt_pdf_input.text()
         output_dir = self.txt_pdf_output.text()
@@ -248,7 +232,6 @@ class UniversalConverter(QWidget):
                                 math.sqrt((p3.x - p2.x)**2 + (p3.y - p2.y)**2) +
                                 math.sqrt((p4.x - p3.x)**2 + (p4.y - p3.y)**2)
                             ) * PT_TO_MM
-                            # 💡 如果你觉得点还是多，可以把下方的 3.0 改成 6.0 甚至 8.0，点就会明显变稀疏
                             num_segments = max(5, min(30, int(chord_len / 5.0)))
                             
                             sampled_points = []
@@ -259,7 +242,6 @@ class UniversalConverter(QWidget):
                                 sampled_points.append(((x + offset_x) * PT_TO_MM, (height - y) * PT_TO_MM))
                             msp.add_lwpolyline(sampled_points)
 
-                # 提取文字
                 text_blocks = page.get_text("blocks")
                 for block in text_blocks:
                     lines = block[4].split('\n')
@@ -283,7 +265,7 @@ class UniversalConverter(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
-    # ==== 核心算法2：全新加入的 DXF 转 PDF ====
+    # ==== 核心算法2：DXF 转 PDF（已修复新版接口报错） ====
     def convert_dxf_to_pdf(self):
         dxf_path = self.txt_dxf_input.text()
         output_dir = self.txt_dxf_output.text()
@@ -299,25 +281,22 @@ class UniversalConverter(QWidget):
         pdf_path = os.path.join(output_dir, f"{base_name}.pdf")
 
         try:
-            # 1. 读取服装 DXF 文件
             doc = ezdxf.readfile(dxf_path)
             msp = doc.modelspace()
 
-            # 2. 创建 Matplotlib 渲染画布
             fig = plt.figure()
             ax = fig.add_axes([0, 0, 1, 1])
+            
+            # 【终极修复方案】：不再使用过时的 set_current_toggle_state
             ctx = RenderContext(doc)
+            ctx.current_backend_color = "#FFFFFF" # 强制背景为白
+            ctx.current_layer_color = "#000000"   # 强制线条为黑
             
-            # 设置渲染背景为白色，线条为黑色（适合打印纸样）
-            ctx.set_current_toggle_state(True)
             backend = MatplotlibBackend(ax)
-            
-            # 3. 渲染 DXF 实体
             Frontend(ctx, backend).draw_layout(msp, finalize=True)
 
-            # 4. 紧凑布局并保存为高保真 PDF 矢量文件
             fig.savefig(pdf_path, format='pdf', bbox_inches='tight', dpi=300)
-            plt.close(fig) # 及时释放内存
+            plt.close(fig) 
 
             QMessageBox.information(self, "成功", f"DXF 转 PDF 成功！\n已被完美渲染为公制高保真 PDF。\n保存路径：{pdf_path}")
         except Exception as e:
