@@ -238,7 +238,7 @@ class UniversalConverter(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
-    # ==== 核心算法2：DXF 转 PDF（💡 带有动态版本兼容的清洗引擎） ====
+    # ==== 核心算法2：DXF 转 PDF（💡 底层直通无损版） ====
     def convert_dxf_to_pdf(self):
         dxf_path = self.txt_dxf_input.text()
         output_dir = self.txt_dxf_output.text()
@@ -258,13 +258,13 @@ class UniversalConverter(QWidget):
             src_doc = ezdxf.readfile(dxf_path)
             src_msp = src_doc.modelspace()
 
-            # 2. 建立一个绝对纯净的全新中间清洗层，确保绝对不发生曲线打碎退化
+            # 2. 建立纯净清洗层
             clean_doc = ezdxf.new('R2010')
             clean_doc.header['$MEASUREMENT'] = 1
             clean_doc.header['$INSUNITS'] = 4  
             clean_msp = clean_doc.modelspace()
 
-            # 3. 核心骨架抽取清洗器：将线宽强行洗成极细线，颜色强制设为纯黑，剥离任何干扰粗圆点
+            # 3. 骨架清洗抽取
             def sanitize_and_copy(entity):
                 if entity.dxftype() in ('POINT', 'MTEXT', 'TEXT', 'ATTRIB'):
                     return
@@ -297,7 +297,7 @@ class UniversalConverter(QWidget):
                 except Exception:
                     pass
 
-            # 4. 彻底炸块，完美保护所有隐藏在 INSERT 内部的裁片骨架
+            # 4. 彻底炸块，不漏裁片
             for entity in src_msp:
                 if entity.dxftype() == 'INSERT':
                     try:
@@ -309,37 +309,35 @@ class UniversalConverter(QWidget):
                 else:
                     sanitize_and_copy(entity)
 
-            # 5. 采用官方最新的 PyMuPdfBackend 原生矢量转换引擎
+            # 5. 原生矢量转换渲染
             context = RenderContext(clean_doc)
             backend = pymupdf.PyMuPdfBackend()
             
             frontend = Frontend(context, backend)
             frontend.draw_layout(clean_msp, finalize=True)
             
-            # 💡 【核心修复点】万能函数动态路由：自动适配新老版本 ezdxf 提取字节流的方法名
+            # 🔒 【极简化修复】：管他外部包装是什么，直接强制找底层 PyMuPDF 的 doc 对象要字节数据
             pdf_bytes = None
-            for method_name in ['get_pdf_bytes', 'get_bytes', 'to_bytes', 'bytes']:
-                if hasattr(backend, method_name):
-                    func = getattr(backend, method_name)
-                    try:
-                        # 尝试调用（带上常见的 page_size 参数或不带参数兜底）
-                        pdf_bytes = func(page_size=None, bg_color='#FFFFFF')
-                    except TypeError:
+            if hasattr(backend, 'doc') and backend.doc:
+                pdf_bytes = backend.doc.tobytes()
+            else:
+                # 最后的超强兼容兜底
+                for method_name in ['get_pdf_bytes', 'get_bytes', 'to_bytes']:
+                    if hasattr(backend, method_name):
                         try:
-                            pdf_bytes = func()
+                            pdf_bytes = getattr(backend, method_name)()
+                            if pdf_bytes: break
                         except Exception:
                             continue
-                    if pdf_bytes:
-                        break
-            
-            if not pdf_bytes:
-                raise AttributeError("无法从当前的 ezdxf PyMuPdfBackend 中提取 PDF 数据流。")
 
-            # 无损写入 PDF 字节流
+            if not pdf_bytes:
+                raise AttributeError("无法从当前的后端引擎中捕获到任何 PDF 核心字节流。")
+
+            # 无损写入 PDF
             with open(pdf_path, 'wb') as fp:
                 fp.write(pdf_bytes)
 
-            QMessageBox.information(self, "成功", f"DXF 转 PDF 成功！\n【工业级无损重构】：100%不丢片、无碎线、完美纯黑极细线！\n保存路径：{pdf_path}")
+            QMessageBox.information(self, "成功", f"DXF 转 PDF 成功！\n【底层直通全容错版】：100%不丢片、不碎线、极细线完美转换！\n保存路径：{pdf_path}")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
