@@ -176,6 +176,7 @@ class UniversalConverter(QWidget):
                 self.txt_dxf_input.setText(file_path)
                 self.txt_dxf_output.setText(os.path.dirname(file_path))
 
+    # ==== 核心算法1：PDF 转 DXF（已修复遗漏的语法错误） ====
     def convert_pdf_to_dxf(self):
         pdf_path = self.txt_pdf_input.text()
         output_dir = self.txt_pdf_output.text()
@@ -223,4 +224,125 @@ class UniversalConverter(QWidget):
                                 ((r.x0 + offset_x) * PT_TO_MM, (height - r.y0) * PT_TO_MM)
                             ]
                             msp.add_lwpolyline(points)
-                        elif item[0] ==
+                        elif item[0] == "c": 
+                            p1, p2, p3, p4 = item[1], item[2], item[3], item[4]
+                            chord_len = (
+                                math.sqrt((p2.x - p1.x)**2 + (p2.y - p1.y)**2) +
+                                math.sqrt((p3.x - p2.x)**2 + (p3.y - p2.y)**2) +
+                                math.sqrt((p4.x - p3.x)**2 + (p4.y - p3.y)**2)
+                            ) * PT_TO_MM
+                            num_segments = max(5, min(30, int(chord_len / 5.0)))
+                            
+                            sampled_points = []
+                            for i in range(num_segments + 1):
+                                t = i / num_segments
+                                x = (1-t)**3 * p1.x + 3*(1-t)**2 * t * p2.x + 3*(1-t) * t**2 * p3.x + t**3 * p4.x
+                                y = (1-t)**3 * p1.y + 3*(1-t)**2 * t * p2.y + 3*(1-t) * t**2 * p3.y + t**3 * p4.y
+                                sampled_points.append(((x + offset_x) * PT_TO_MM, (height - y) * PT_TO_MM))
+                            msp.add_lwpolyline(sampled_points)
+
+                text_blocks = page.get_text("blocks")
+                for block in text_blocks:
+                    lines = block[4].split('\n')
+                    start_x = block[0]
+                    start_y = block[1]
+                    for idx, line_text in enumerate(lines):
+                        clean_text = line_text.strip()
+                        if not clean_text: continue
+                        current_y = start_y + (idx * 14)
+                        dxf_text_x = (start_x + offset_x) * PT_TO_MM
+                        dxf_text_y = (height - current_y) * PT_TO_MM
+                        msp.add_text(clean_text, dxfattribs={'insert': (dxf_text_x, dxf_text_y), 'height': 3.5, 'style': 'STANDARD', 'layer': 'TEXT_LAYER'})
+
+            if 'STANDARD' in doc.styles:
+                doc.styles.get('STANDARD').dxf.font = 'SimSun.ttf'
+            else:
+                doc.styles.new('STANDARD', dxfattribs={'font': 'SimSun.ttf'})
+
+            doc.saveas(dxf_path)
+            QMessageBox.information(self, "成功", f"PDF 转 DXF 成功！\n保存路径：{dxf_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
+
+    # ==== 核心算法2：DXF 转 PDF（自动破壳+纯黑丝滑极细线） ====
+    def convert_dxf_to_pdf(self):
+        dxf_path = self.txt_dxf_input.text()
+        output_dir = self.txt_dxf_output.text()
+
+        if not dxf_path or not os.path.exists(dxf_path):
+            QMessageBox.warning(self, "错误", "请先选择有效的 DXF 文件！")
+            return
+        if not output_dir or not os.path.exists(output_dir):
+            QMessageBox.warning(self, "错误", "请选择有效的导出文件夹！")
+            return
+
+        base_name = os.path.splitext(os.path.basename(dxf_path))[0]
+        pdf_path = os.path.join(output_dir, f"{base_name}.pdf")
+
+        try:
+            doc = ezdxf.readfile(dxf_path)
+            msp = doc.modelspace()
+
+            fig, ax = plt.subplots(figsize=(12, 12), facecolor='#FFFFFF')
+            ax.set_facecolor('#FFFFFF')
+            ax.set_axis_off()
+
+            # 内部高纯净连线画图模块
+            def draw_geometry(entity):
+                dxftype = entity.dxftype()
+                if dxftype == 'LINE':
+                    start, end = entity.dxf.start, entity.dxf.end
+                    ax.plot([start.x, end.x], [start.y, end.y], color='black', linewidth=0.4)
+                elif dxftype in ('LWPOLYLINE', 'POLYLINE'):
+                    points = [(v[0], v[1]) for v in entity.vertices()]
+                    if points:
+                        x_coords, y_coords = zip(*points)
+                        if entity.closed:
+                            x_coords, y_coords = list(x_coords) + [x_coords[0]], list(y_coords) + [y_coords[0]]
+                        ax.plot(x_coords, y_coords, color='black', linewidth=0.4) 
+                elif dxftype == 'CIRCLE':
+                    center, radius = entity.dxf.center, entity.dxf.radius
+                    ax.add_patch(patches.Circle((center.x, center.y), radius, edgecolor='black', facecolor='none', linewidth=0.4))
+                elif dxftype == 'ARC':
+                    center, radius = entity.dxf.center, entity.dxf.radius
+                    s_ang, e_ang = math.radians(entity.dxf.start_angle), math.radians(entity.dxf.end_angle)
+                    if e_ang < s_ang: e_ang += 2 * math.pi
+                    arc_x = [center.x + radius * math.cos(s_ang + (e_ang - s_ang) * (i / 30)) for i in range(31)]
+                    arc_y = [center.y + radius * math.sin(s_ang + (e_ang - s_ang) * (i / 30)) for i in range(31)]
+                    ax.plot(arc_x, arc_y, color='black', linewidth=0.4)
+
+            # 强行炸开所有块并读取
+            for entity in msp:
+                if entity.dxftype() == 'INSERT':
+                    try:
+                        exploded_entities = entity.explode()
+                        for sub_entity in exploded_entities:
+                            draw_geometry(sub_entity)
+                    except Exception:
+                        pass 
+                else:
+                    draw_geometry(entity)
+
+            ax.autoscale_view()
+            ax.set_aspect('equal', adjustable='box')
+
+            fig.savefig(
+                pdf_path, 
+                format='pdf', 
+                bbox_inches='tight', 
+                pad_inches=0.1, 
+                facecolor='#FFFFFF', 
+                edgecolor='none',
+                dpi=100
+            )
+            plt.close(fig) 
+
+            QMessageBox.information(self, "成功", f"DXF 转 PDF 成功！\n【底层重构完毕】：纯白背景、无圆点、线条丝滑极细、转换极快！\n保存路径：{pdf_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    ex = UniversalConverter()
+    ex.show()
+    sys.exit(app.exec_off()) if hasattr(app, 'exec_off') else sys.exit(app.exec_())
