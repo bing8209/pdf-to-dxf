@@ -160,7 +160,6 @@ class PDFtoDXFConverter(QWidget):
             msp = doc.modelspace()
 
             # 2. 换算单位系数：将 PDF 的 点(pt) 转换为 毫米(mm)
-            # 1 inch = 72 points = 25.4 mm -> 1 pt = 25.4 / 72 ≈ 0.35277778 mm
             PT_TO_MM = 25.4 / 72.0
 
             pdf = fitz.open(pdf_path)
@@ -205,11 +204,8 @@ class PDFtoDXFConverter(QWidget):
                             msp.add_lwpolyline(sampled_points)
 
                 # --- B部分：提取文字 ---
-                # 获取页面中的文本块（包含文字内容、坐标、大小）
                 text_blocks = page.get_text("blocks")
                 for block in text_blocks:
-                    # block[4] 是文本行的内容，block[0], block[1] 是左上角 X, Y 坐标
-                    # 有时候大块文本包含换行，拆开单独处理以保证在 CAD 里的排版正确
                     lines = block[4].split('\n')
                     start_x = block[0]
                     start_y = block[1]
@@ -219,23 +215,21 @@ class PDFtoDXFConverter(QWidget):
                         if not clean_text:
                             continue
                             
-                        # 计算当前行在 CAD 坐标系下的位置
-                        # 每多一行，Y 轴向下偏移一点（假设行高约14pt，可以按需微调）
                         current_y = start_y + (idx * 14)
                         
                         dxf_text_x = (start_x + offset_x) * PT_TO_MM
                         dxf_text_y = (height - current_y) * PT_TO_MM
                         
-                        # 写入 DXF 文字实体（设置文字高约 3.5mm，可根据服装实际版面微调）
-                        # 服装 CAD 对通用 TEXT 支持最好
-                        txt_entity = msp.add_text(
+                        # 【终极修复方案】：彻底废除可能引起版本报错的方法
+                        # 直接把坐标传入 'insert' 属性中，这是 ezdxf 最天然、永远不会报错的原生写法
+                        msp.add_text(
                             clean_text, 
                             dxfattribs={
+                                'insert': (dxf_text_x, dxf_text_y), # 直接定义文字起点位置
                                 'height': 3.5, 
                                 'layer': 'TEXT_LAYER'
                             }
                         )
-                        txt_entity.set_pos((dxf_text_x, dxf_text_y), align='LEFT')
 
             # 3. 设置默认字体支持中文，防止 CAD 打开全是问号
             doc.styles.new('STANDARD', dxfattribs={'font': 'SimSun.ttf'}) # 宋体
