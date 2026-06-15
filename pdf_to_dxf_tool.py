@@ -265,7 +265,7 @@ class UniversalConverter(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
-    # ==== 核心算法2：DXF 转 PDF（已修复新版接口报错） ====
+    # ==== 核心算法2：DXF 转 PDF（高级白底、极细线、无点平滑渲染） ====
     def convert_dxf_to_pdf(self):
         dxf_path = self.txt_dxf_input.text()
         output_dir = self.txt_dxf_output.text()
@@ -284,21 +284,43 @@ class UniversalConverter(QWidget):
             doc = ezdxf.readfile(dxf_path)
             msp = doc.modelspace()
 
-            fig = plt.figure()
+            # 1. 建立画布与坐标系
+            fig = plt.figure(frameon=False)
             ax = fig.add_axes([0, 0, 1, 1])
-            
-            # 【终极修复方案】：不再使用过时的 set_current_toggle_state
+            ax.set_axis_off()  # 确保没有任何坐标轴框线
+
+            # 2. 配置高级渲染环境
             ctx = RenderContext(doc)
-            ctx.current_backend_color = "#FFFFFF" # 强制背景为白
-            ctx.current_layer_color = "#000000"   # 强制线条为黑
             
+            # --- 💡 服装打版纸样关键优化配置 ---
+            ctx.current_backend_color = "#FFFFFF"  # 100% 纯白背景
+            ctx.current_layer_color = "#000000"    # 100% 纯黑线条
+            
+            # 关闭节点圆点显示，只留平滑线条
+            if hasattr(ctx, 'show_points'):
+                ctx.show_points = False 
+
+            # 3. 创建后端，配置线条为极细模式
             backend = MatplotlibBackend(ax)
+            # 通过缩放让服装 CAD 线条变得清爽纤细（0.2 为极细丝滑度，可微调）
+            backend.line_width_scale = 0.2 
+
+            # 4. 执行渲染
             Frontend(ctx, backend).draw_layout(msp, finalize=True)
 
-            fig.savefig(pdf_path, format='pdf', bbox_inches='tight', dpi=300)
+            # 5. 保存为平滑无损的高清矢量 PDF
+            fig.savefig(
+                pdf_path, 
+                format='pdf', 
+                bbox_inches='tight', 
+                pad_inches=0, 
+                facecolor='#FFFFFF', 
+                edgecolor='none',
+                dpi=600  # 超高分辨率防锯齿
+            )
             plt.close(fig) 
 
-            QMessageBox.information(self, "成功", f"DXF 转 PDF 成功！\n已被完美渲染为公制高保真 PDF。\n保存路径：{pdf_path}")
+            QMessageBox.information(self, "成功", f"DXF 转 PDF 成功！\n已完美渲染为纯白背景、无点光滑细线的打版 PDF。\n保存路径：{pdf_path}")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
