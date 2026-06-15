@@ -15,17 +15,16 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        matplotlib
-        pip install PyQt5 PyMuPDF ezdxf pyinstaller
+        # 已修正：将 matplotlib 正确加入到 pip 安装命令中
+        pip install PyQt5 PyMuPDF ezdxf pyinstaller matplotlib
 
     - name: Build with PyInstaller
       run: |
-        # 建议这里 --name 后面用英文 "PDF_to_DXF_Tool"，规避 Windows 虚拟机的中文路径报错风险
         # 注意：末尾的脚本文件名（如 pdf_to_dxf_tool.py）必须和你代码仓库里的文件名一模一样
         pyinstaller --clean --noconsole --onefile --name "PDF_to_DXF_Tool" pdf_to_dxf_tool.py
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: PDF转DXF工具_EXE_安装包  # 下载时的压缩包名字可以叫中文
-        path: dist/PDF_to_DXF_Tool.exe  # 对应的路径也改成了英文
+        name: PDF_to_DXF_Converter_EXE  # 建议下载的压缩包也用英文，防止某些极端情况下解压乱码
+        path: dist/PDF_to_DXF_Tool.exe
