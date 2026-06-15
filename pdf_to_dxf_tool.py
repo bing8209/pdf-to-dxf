@@ -1,5 +1,6 @@
 import sys
 import os
+import math
 import fitz  # PyMuPDF
 import ezdxf
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, 
@@ -13,7 +14,7 @@ class PDFtoDXFConverter(QWidget):
         self.initUI()
         
     def initUI(self):
-        self.setWindowTitle('PDF 转 DXF 服装矢量转换工具 (毫米+文字版)')
+        self.setWindowTitle('PDF 转 DXF 服装矢量转换工具 (毫米+智能布点版)')
         self.resize(550, 300)
         self.setAcceptDrops(True)
 
@@ -137,7 +138,7 @@ class PDFtoDXFConverter(QWidget):
         if dir_path:
             self.txt_output.setText(dir_path)
 
-    # ==== 核心转换：高精度 mm 映射 + 文本提取 ====
+    # ==== 核心转换：高精度 mm 映射 + 智能动态布点 + 文本提取 ====
     def convert_file(self):
         pdf_path = self.txt_input.text()
         output_dir = self.txt_output.text()
@@ -153,13 +154,11 @@ class PDFtoDXFConverter(QWidget):
         dxf_path = os.path.join(output_dir, f"{base_name}.dxf")
 
         try:
-            # 1. 创建 DXF 并指定基础单位为 毫米 (mm)
             doc = ezdxf.new('R2010')
-            doc.header['$MEASUREMENT'] = 1  # 1 代表公制 Metric
-            doc.header['$INSUNITS'] = 4     # 4 代表毫米 Millimeters
+            doc.header['$MEASUREMENT'] = 1  
+            doc.header['$INSUNITS'] = 4     
             msp = doc.modelspace()
 
-            # 2. 换算单位系数：将 PDF 的 点(pt) 转换为 毫米(mm)
             PT_TO_MM = 25.4 / 72.0
 
             pdf = fitz.open(pdf_path)
@@ -191,10 +190,20 @@ class PDFtoDXFConverter(QWidget):
                                 ((r.x0 + offset_x) * PT_TO_MM, (height - r.y0) * PT_TO_MM)
                             ]
                             msp.add_lwpolyline(points)
-                        # 绘制贝塞尔曲线（高精度离散化防变形）
+                        # 绘制贝塞尔曲线（【智能优化点】：动态加点算法）
                         elif item[0] == "c": 
                             p1, p2, p3, p4 = item[1], item[2], item[3], item[4]
-                            num_segments = 30 
+                            
+                            # 1. 估算贝塞尔曲线的控制弦长（用控制点间的直线距离之和代替真实曲线长度）
+                            chord_len = (
+                                math.sqrt((p2.x - p1.x)**2 + (p2.y - p1.y)**2) +
+                                math.sqrt((p3.x - p2.x)**2 + (p3.y - p2.y)**2) +
+                                math.sqrt((p4.x - p3.x)**2 + (p4.y - p3.y)**2)
+                            ) * PT_TO_MM  # 换算成实际毫米长度
+                            
+                            # 2. 核心算法：每 3 毫米分配 1 个点，但最少不低于 6 个点，最多不超过 35 个点
+                            num_segments = max(6, min(35, int(chord_len / 3.0)))
+                            
                             sampled_points = []
                             for i in range(num_segments + 1):
                                 t = i / num_segments
@@ -225,20 +234,19 @@ class PDFtoDXFConverter(QWidget):
                             dxfattribs={
                                 'insert': (dxf_text_x, dxf_text_y),
                                 'height': 3.5, 
-                                'style': 'STANDARD', # 强制文本关联默认的 STANDARD 样式
+                                'style': 'STANDARD', 
                                 'layer': 'TEXT_LAYER'
                             }
                         )
 
-            # 【修复点】：不使用 styles.new()，而是获取已存在的 STANDARD 样式并修改其字体
             if 'STANDARD' in doc.styles:
                 standard_style = doc.styles.get('STANDARD')
-                standard_style.dxf.font = 'SimSun.ttf' # 改为宋体支持中文
+                standard_style.dxf.font = 'SimSun.ttf' 
             else:
                 doc.styles.new('STANDARD', dxfattribs={'font': 'SimSun.ttf'})
 
             doc.saveas(dxf_path)
-            QMessageBox.information(self, "成功", f"转换完成！\n尺寸已自动校准为毫米(mm)\n且文字已成功提取。\n保存路径：{dxf_path}")
+            QMessageBox.information(self, "成功", f"转换完成！\n尺寸已校准为毫米(mm)\n线条点数已完成智能精简优化。\n保存路径：{dxf_path}")
             
         except Exception as e:
             QMessageBox.critical(self, "错误", f"转换失败，错误原因：\n{str(e)}")
