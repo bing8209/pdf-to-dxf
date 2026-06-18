@@ -150,7 +150,37 @@ class UniversalConverter(QWidget):
                 self.txt_dxf_input.setText(file_path)
                 self.txt_dxf_output.setText(os.path.dirname(file_path))
 
-    # ==== 算法1：PDF 转 DXF ====
+    # ---- 几何曲线精简核心算法（道格拉斯-普克） ----
+    def _point_line_distance(self, pt, p1, p2):
+        x, y = pt[0], pt[1]
+        x1, y1 = p1[0], p1[1]
+        x2, y2 = p2[0], p2[1]
+        dx = x2 - x1
+        dy = y2 - y1
+        if dx == 0 and dy == 0:
+            return math.sqrt((x - x1) ** 2 + (y - y1) ** 2)
+        return abs(dy * x - dx * y + x2 * y1 - y2 * x1) / math.sqrt(dx * dx + dy * dy)
+
+    def _douglas_peucker(self, points, epsilon=0.05):
+        """高效压减无意义节点，保留服装裁片真实轮廓曲线"""
+        if len(points) < 3:
+            return points
+        dmax = 0
+        index = 0
+        end = len(points) - 1
+        for i in range(1, end):
+            d = self._point_line_distance(points[i], points[0], points[end])
+            if d > dmax:
+                index = i
+                dmax = d
+        if dmax > epsilon:
+            rec1 = self._douglas_peucker(points[:index + 1], epsilon)
+            rec2 = self._douglas_peucker(points[index:], epsilon)
+            return rec1[:-1] + rec2
+        else:
+            return [points[0], points[end]]
+
+    # ==== 算法1：PDF 转 DXF（已集成连续合并与曲线点云深度压减优化） ====
     def convert_pdf_to_dxf(self):
         pdf_path = self.txt_pdf_input.text()
         output_dir = self.txt_pdf_output.text()
@@ -181,14 +211,32 @@ class UniversalConverter(QWidget):
                 
                 drawings = page.get_drawings()
                 for draw in drawings:
+                    # 引入路径缓存机制，把零碎的 item 段融合成一整条多段线
+                    current_polyline = []
+                    
                     for item in draw["items"]:
                         if item[0] == "l": 
                             p1, p2 = item[1], item[2]
-                            msp.add_line(
-                                ((p1.x + offset_x) * PT_TO_MM, (height - p1.y) * PT_TO_MM),
-                                ((p2.x + offset_x) * PT_TO_MM, (height - p2.y) * PT_TO_MM)
-                            )
+                            pt1 = ((p1.x + offset_x) * PT_TO_MM, (height - p1.y) * PT_TO_MM)
+                            pt2 = ((p2.x + offset_x) * PT_TO_MM, (height - p2.y) * PT_TO_MM)
+                            
+                            if not current_polyline:
+                                current_polyline.extend([pt1, pt2])
+                            elif math.isclose(current_polyline[-1][0], pt1[0], abs_tol=1e-2) and math.isclose(current_polyline[-1][1], pt1[1], abs_tol=1e-2):
+                                current_polyline.append(pt2)
+                            else:
+                                if len(current_polyline) > 1:
+                                    simplified = self._douglas_peucker(current_polyline, epsilon=0.05)
+                                    msp.add_lwpolyline(simplified)
+                                current_polyline = [pt1, pt2]
+                                
                         elif item[0] == "re": 
+                            # 遇到矩形，先把之前的连续线条结算了
+                            if len(current_polyline) > 1:
+                                simplified = self._douglas_peucker(current_polyline, epsilon=0.05)
+                                msp.add_lwpolyline(simplified)
+                            current_polyline = []
+                            
                             r = item[1]
                             points = [
                                 ((r.x0 + offset_x) * PT_TO_MM, (height - r.y0) * PT_TO_MM),
@@ -198,6 +246,7 @@ class UniversalConverter(QWidget):
                                 ((r.x0 + offset_x) * PT_TO_MM, (height - r.y0) * PT_TO_MM)
                             ]
                             msp.add_lwpolyline(points)
+                            
                         elif item[0] == "c": 
                             p1, p2, p3, p4 = item[1], item[2], item[3], item[4]
                             chord_len = (
@@ -213,7 +262,21 @@ class UniversalConverter(QWidget):
                                 x = (1-t)**3 * p1.x + 3*(1-t)**2 * t * p2.x + 3*(1-t) * t**2 * p3.x + t**3 * p4.x
                                 y = (1-t)**3 * p1.y + 3*(1-t)**2 * t * p2.y + 3*(1-t) * t**2 * p3.y + t**3 * p4.y
                                 sampled_points.append(((x + offset_x) * PT_TO_MM, (height - y) * PT_TO_MM))
-                            msp.add_lwpolyline(sampled_points)
+                            
+                            if not current_polyline:
+                                current_polyline.extend(sampled_points)
+                            elif math.isclose(current_polyline[-1][0], sampled_points[0][0], abs_tol=1e-2) and math.isclose(current_polyline[-1][1], sampled_points[0][1], abs_tol=1e-2):
+                                current_polyline.extend(sampled_points[1:])
+                            else:
+                                if len(current_polyline) > 1:
+                                    simplified = self._douglas_peucker(current_polyline, epsilon=0.05)
+                                    msp.add_lwpolyline(simplified)
+                                current_polyline = sampled_points
+                    
+                    # 整个闭合组循环结束，清算最后的残余节点
+                    if len(current_polyline) > 1:
+                        simplified = self._douglas_peucker(current_polyline, epsilon=0.05)
+                        msp.add_lwpolyline(simplified)
 
                 text_blocks = page.get_text("blocks")
                 for block in text_blocks:
@@ -234,11 +297,11 @@ class UniversalConverter(QWidget):
                 doc.styles.new('STANDARD', dxfattribs={'font': 'SimSun.ttf'})
 
             doc.saveas(dxf_path)
-            QMessageBox.information(self, "成功", f"PDF 转 DXF 成功！\n保存路径：{dxf_path}")
+            QMessageBox.information(self, "成功", f"PDF 转 DXF 成功！\n【几何深度清理压缩版】：线段已无损融合，多余点已完美过滤！\n保存路径：{dxf_path}")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
-    # ==== 核心算法2：DXF 转 PDF（💡 底层直通无损版） ====
+    # ==== 核心算法2：DXF 转 PDF（💡 底层直通无损版 - 保持原样不做改动） ====
     def convert_dxf_to_pdf(self):
         dxf_path = self.txt_dxf_input.text()
         output_dir = self.txt_dxf_output.text()
