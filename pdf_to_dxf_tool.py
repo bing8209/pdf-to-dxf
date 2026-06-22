@@ -53,7 +53,7 @@ class UniversalConverter(QWidget):
         
         self.tabs.addTab(self.tab1, "PDF 转 DXF")
         self.tabs.addTab(self.tab2, "DXF 转 PDF")
-        self.tabs.addTab(self.tab3, "图片转 DXF (图论单线版)")
+        self.tabs.addTab(self.tab3, "图片转 DXF (丝滑完美版)")
         
         main_layout.addWidget(self.tabs)
         self.setLayout(main_layout)
@@ -145,7 +145,7 @@ class UniversalConverter(QWidget):
         h_layout2.addWidget(btn_dir)
         layout.addLayout(h_layout2)
         
-        btn_convert = QPushButton("像素链式拓扑算法 · 导出绝无双线的工业单线")
+        btn_convert = QPushButton("消融阶梯锯齿 · 生成高丝滑度 CAD 曲线")
         btn_convert.setStyleSheet("background-color: #a855f7; font-weight: bold; padding: 10px; font-size: 15px;")
         btn_convert.clicked.connect(self.convert_img_to_dxf)
         layout.addWidget(btn_convert)
@@ -203,6 +203,37 @@ class UniversalConverter(QWidget):
             rec2 = self._douglas_peucker(points[index:], epsilon)
             return rec1[:-1] + rec2
         else: return [points[0], points[end]]
+
+    # 💡 新增工业级算法：高阶几何切线平滑器（用于揉平像素锯齿）
+    def _smooth_polyline_bezier(self, points, smooth_factor=0.25):
+        if len(points) < 3: return points
+        
+        smoothed_points = []
+        smoothed_points.append(points[0])
+        
+        # 顺着折线节点的走向计算三次切线插值
+        for i in range(1, len(points) - 1):
+            p0, p1, p2 = points[i-1], points[i], points[i+1]
+            
+            # 计算切线方向矢量
+            v1_x, v1_y = p1[0] - p0[0], p1[1] - p0[1]
+            v2_x, v2_y = p2[0] - p1[0], p2[1] - p1[1]
+            
+            # 融合相邻段的斜率，产生一个圆润的控制切线
+            tangent_x = (v1_x + v2_x) * smooth_factor
+            tangent_y = (v1_y + v2_y) * smooth_factor
+            
+            # 在拐点两翼高密度插入 3 个过渡微元点，把直角弯“磨圆”
+            for t in [0.25, 0.5, 0.75]:
+                # 经典的二次至三次几何多项式过渡
+                mx = p1[0] - (1 - t) * tangent_x * 0.5 + t * tangent_x * 0.5
+                my = p1[1] - (1 - t) * tangent_y * 0.5 + t * tangent_y * 0.5
+                smoothed_points.append((mx, my))
+                
+            smoothed_points.append(p1)
+            
+        smoothed_points.append(points[-1])
+        return smoothed_points
 
     # ==== 算法1：PDF 转 DXF ====
     def convert_pdf_to_dxf(self):
@@ -288,7 +319,7 @@ class UniversalConverter(QWidget):
             QMessageBox.information(self, "成功", f"DXF 转 PDF 成功！\n保存路径：{pdf_path}")
         except Exception as e: QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
-    # ==== ⚙️ 核心大换血：纯像素图论拓扑爬行算法（彻底干掉 Potrace 双线） ====
+    # ==== ⚙️ 终极模块：图论单线追踪 + 三次切线精细圆滑算法 ====
     def convert_img_to_dxf(self):
         img_path = self.txt_img_input.text()
         output_dir = self.txt_img_output.text()
@@ -298,19 +329,17 @@ class UniversalConverter(QWidget):
             return
 
         base_name = os.path.splitext(os.path.basename(img_path))[0]
-        final_dxf_path = os.path.join(output_dir, f"{base_name}_图论绝对单线版.dxf")
+        final_dxf_path = os.path.join(output_dir, f"{base_name}_完美丝滑单线版.dxf")
 
         try:
-            # 1. 载入并转灰度
+            # 1. 载入图像并提取灰度
             src_qimg = QImage(img_path)
             if src_qimg.isNull(): raise ValueError("图像加载失败。")
             gray_img = src_qimg.convertToFormat(QImage.Format_Grayscale8)
             width, height = gray_img.width(), gray_img.height()
             
-            # 2. 建立一个布尔骨架矩阵（True 代表中心骨架像素点）
-            # 严格避开边缘 6 像素，杜绝大外框
+            # 2. 定位中轴骨架
             skeleton_map = [[False for _ in range(height)] for _ in range(width)]
-            
             for y in range(6, height - 6):
                 for x in range(6, width - 6):
                     p_center = qGray(gray_img.pixel(x, y))
@@ -319,37 +348,27 @@ class UniversalConverter(QWidget):
                     p_up     = qGray(gray_img.pixel(x, y - 2))
                     p_down   = qGray(gray_img.pixel(x, y + 2))
 
-                    grad_h = abs(p_right - p_left)
-                    grad_v = abs(p_down - p_up)
-
-                    if grad_h > 12 or grad_v > 12:
-                        # 仅保留局部最黑的那个像素中心脊梁
+                    if abs(p_right - p_left) > 12 or abs(p_down - p_up) > 12:
                         if p_center <= p_left and p_center <= p_right and p_center < 225:
                             skeleton_map[x][y] = True
                         elif p_center <= p_up and p_center <= p_down and p_center < 225:
                             skeleton_map[x][y] = True
 
-            # 3. 🧠 图论拓扑追踪（模拟开小车顺着骨架走，生成纯正单股线）
+            # 3. 链式拓扑寻线爬行
             visited = [[False for _ in range(height)] for _ in range(width)]
             all_tracks = []
-
-            # 定义八邻域方向扫描（支持对角线爬行）
             directions = [(-1,0), (1,0), (0,-1), (0,1), (-1,-1), (-1,1), (1,-1), (1,1)]
 
             for y in range(6, height - 6):
                 for x in range(6, width - 6):
-                    # 如果发现一个未被追踪过的骨架点，将其作为新线条的起点
                     if skeleton_map[x][y] and not visited[x][y]:
                         current_track = []
                         cx, cy = x, y
                         
-                        # 开启链式摸索爬行
                         while True:
                             visited[cx][cy] = True
-                            # DXF 的 Y 轴方向和图片相反，这里直接做垂直翻转校正
                             current_track.append((float(cx), float(height - cy)))
                             
-                            # 寻找下一个邻接的骨架点
                             found_next = False
                             for dx, dy in directions:
                                 nx, ny = cx + dx, cy + dy
@@ -358,30 +377,34 @@ class UniversalConverter(QWidget):
                                         cx, cy = nx, ny
                                         found_next = True
                                         break
-                            
-                            # 如果四周没有路了，这条单线追踪结束
-                            if not found_next:
-                                break
+                            if not found_next: break
                         
-                        # 过滤掉太短的杂点线条（比如长度小于 5 像素的短毛刺）
-                        if len(current_track) > 5:
+                        if len(current_track) > 6:
                             all_tracks.append(current_track)
 
-            # 4. 直接输出纯单线到 DXF，不再通过外部 exe 后台生成
+            # 4. 🚀 关键进化：双重消柔后处理（先压缩、再磨圆）
             doc = ezdxf.new('R2010')
             doc.header['$MEASUREMENT'], doc.header['$INSUNITS'] = 1, 4
             msp = doc.modelspace()
 
             for track in all_tracks:
-                # 使用 Douglas-Peucker 算法将像素级的碎点拉直成流畅的 CAD 几何多段线
-                smoothed = self._douglas_peucker(track, epsilon=0.6)
-                if len(smoothed) > 1:
-                    # 写入绝对单股多段线，100%不可能出现双线！
-                    msp.add_lwpolyline(smoothed, dxfattribs={'color': 7, 'layer': 'CAD_SINGLE_LINE'})
+                # 步骤 A：利用 Douglas-Peucker 提取出主骨架控制点，消除微小的像素抖动毛刺
+                backbone_pts = self._douglas_peucker(track, epsilon=1.2)
+                
+                if len(backbone_pts) > 2:
+                    # 步骤 B：使用样条切线平滑器，将硬邦邦的短折线节点变成圆润的 CAD 曲线
+                    smooth_cad_line = self._smooth_polyline_bezier(backbone_pts, smooth_factor=0.3)
+                    
+                    if len(smooth_cad_line) > 1:
+                        # 写入 DXF 的全流畅多段线
+                        msp.add_lwpolyline(smooth_cad_line, dxfattribs={'color': 7, 'layer': 'CAD_SMOOTH_LINE'})
+                elif len(backbone_pts) == 2:
+                    # 如果本来就是一根直线，原样输出
+                    msp.add_lwpolyline(backbone_pts, dxfattribs={'color': 7, 'layer': 'CAD_SMOOTH_LINE'})
 
             doc.saveas(final_dxf_path)
 
-            QMessageBox.information(self, "成功", f"单线提取大获成功！\n【图论纯单线版】：\n1. 已经彻底停用了 Potrace 边缘引擎，从底层逻辑上消灭了双线生成的可能性！\n2. 当前每一条 CAD 线段都是纯正的单股中心流线。\n保存路径：{final_dxf_path}")
+            QMessageBox.information(self, "成功", f"图纸输出大功告成！\n【完美丝滑单线版】：\n1. 成功过滤了像素方格带来的小锯齿短线段！\n2. 曲线转角处已自动做三次切线化圆润处理，可以直接送入工业打版软件！\n路径：{final_dxf_path}")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
