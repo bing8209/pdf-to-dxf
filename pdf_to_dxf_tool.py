@@ -20,19 +20,15 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, QTabWid
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QImage, QColor
 
-# 💡 新增：完美兼容 PyInstaller 的外部依赖寻址函数
 def get_potrace_path():
     """ 确保无论是直接运行还是打包成独立exe，都能在软件同级目录下找到 potrace.exe """
     if getattr(sys, 'frozen', False):
-        # 如果是打包后的环境，sys.executable 是最终 exe 的路径
         base_path = os.path.dirname(sys.executable)
     else:
-        # 如果是开发环境
         base_path = os.path.dirname(os.path.abspath(__file__))
     
     potrace_exe = os.path.join(base_path, "potrace.exe")
     if not os.path.exists(potrace_exe):
-        # 兜底方案，尝试直接在系统环境变量或工作目录里找
         potrace_exe = "potrace.exe"
     return potrace_exe
 
@@ -70,7 +66,7 @@ class UniversalConverter(QWidget):
         
         self.tabs.addTab(self.tab1, "PDF 转 DXF")
         self.tabs.addTab(self.tab2, "DXF 转 PDF")
-        self.tabs.addTab(self.tab3, "图片转 DXF (高动态梯度版)")
+        self.tabs.addTab(self.tab3, "图片转 DXF (纯净单线版)")
         
         main_layout.addWidget(self.tabs)
         self.setLayout(main_layout)
@@ -162,7 +158,7 @@ class UniversalConverter(QWidget):
         h_layout2.addWidget(btn_dir)
         layout.addLayout(h_layout2)
         
-        btn_convert = QPushButton("过滤外框 · 提取无损单线 CAD 裁片")
+        btn_convert = QPushButton("消除双层皮 · 提取完美单线 CAD 裁片")
         btn_convert.setStyleSheet("background-color: #a855f7; font-weight: bold; padding: 10px; font-size: 15px;")
         btn_convert.clicked.connect(self.convert_img_to_dxf)
         layout.addWidget(btn_convert)
@@ -305,12 +301,11 @@ class UniversalConverter(QWidget):
             QMessageBox.information(self, "成功", f"DXF 转 PDF 成功！\n保存路径：{pdf_path}")
         except Exception as e: QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
-    # ==== 🚀 核心改进：自适应梯度 + 修复闭合括号 + 兼容单文件打包路径 ====
+    # ==== ⚙️ 核心进化：双层空心轮廓几何压扁演算法（单线化） ====
     def convert_img_to_dxf(self):
         img_path = self.txt_img_input.text()
         output_dir = self.txt_img_output.text()
 
-        # 💡 使用全新兼容 PyInstaller 的绝对路径获取器
         potrace_exe = get_potrace_path()
             
         if not img_path or not os.path.exists(img_path) or not output_dir:
@@ -320,42 +315,35 @@ class UniversalConverter(QWidget):
         base_name = os.path.splitext(os.path.basename(img_path))[0]
         temp_bmp = os.path.join(output_dir, f"temp_grad_{base_name}.bmp")
         temp_raw_dxf = os.path.join(output_dir, f"temp_raw_{base_name}.dxf")
-        final_dxf_path = os.path.join(output_dir, f"{base_name}_工业精准单线版.dxf")
+        final_dxf_path = os.path.join(output_dir, f"{base_name}_完美单线工业版.dxf")
 
         try:
-            # 1. 载入并转为灰度
+            # 1. 高动态梯度扫描
             src_qimg = QImage(img_path)
             if src_qimg.isNull(): raise ValueError("图像加载失败。")
             gray_img = src_qimg.convertToFormat(QImage.Format_Grayscale8)
             width, height = gray_img.width(), gray_img.height()
             
-            # 建立一个单色画板（默认全白背景，防止产生外边框）
             out_img = QImage(width, height, QImage.Format_Mono)
             out_img.setColorCount(2)
-            out_img.setColor(0, QColor(Qt.black).rgb()) # 0 代表黑色（线条）
-            out_img.setColor(1, QColor(Qt.white).rgb()) # 1 代表白色（背景）
-            out_img.fill(1) # 全图填白
+            out_img.setColor(0, QColor(Qt.black).rgb()) 
+            out_img.setColor(1, QColor(Qt.white).rgb()) 
+            out_img.fill(1) 
 
-            # 2. 高保真局部像素跳变差值扫描
-            # 故意留出边缘不扫描，从源头上抹杀“图片外框”
             for y in range(4, height - 4):
                 for x in range(4, width - 4):
                     center_p = qGray(gray_img.pixel(x, y))
-                    
-                    # 💡 核心修复：在此处完美闭合差值计算的括号，杜绝 SyntaxError
                     diff_h = abs(qGray(gray_img.pixel(x + 3, y)) - qGray(gray_img.pixel(x - 3, y)))
-                    diff_v = abs(qGray(gray_img.pixel(x, y + 3)) - qGray(gray_img.pixel(x, y - 4)))
+                    diff_v = abs(qGray(gray_img.pixel(x, y + 3)) - qGray(gray_img.pixel(x, y - 3)))
                     
-                    # 只要跨度内的灰度跳变大于 15（代表有线条轮廓存在），即判定为有效样板线
                     if diff_h > 15 or diff_v > 15:
                         if center_p < 225: 
                             out_img.setPixel(x, y, 0)
 
-            # 保存处理好的、已经去掉了外框的纯线条图
             out_img.save(temp_bmp, "BMP")
 
-            # 3. 极速过滤微小圈圈，调用后台 Potrace 引擎
-            cmd = [potrace_exe, temp_bmp, "-b", "dxf", "-o", temp_raw_dxf, "--turdsize", "200", "--alphamax", "0.1", "--opttolerance", "0.5"]
+            # 2. 调用底层矢量引擎
+            cmd = [potrace_exe, temp_bmp, "-b", "dxf", "-o", temp_raw_dxf, "--turdsize", "250", "--alphamax", "0.1", "--opttolerance", "0.5"]
             
             startupinfo = None
             if os.name == 'nt':
@@ -366,8 +354,8 @@ class UniversalConverter(QWidget):
             result = subprocess.run(cmd, startupinfo=startupinfo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             if result.returncode != 0: raise RuntimeError(f"引擎提取失败: {result.stderr}")
 
-            # 4. 二次精简骨架化
-            if not os.path.exists(temp_raw_dxf): raise FileNotFoundError("临时矢量文件生成未成功。")
+            # 3. 🧠 工业级单线重构：对空心环进行方向折叠压扁
+            if not os.path.exists(temp_raw_dxf): raise FileNotFoundError("矢量转换未成功。")
             
             raw_doc = ezdxf.readfile(temp_raw_dxf)
             final_doc = ezdxf.new('R2010')
@@ -377,20 +365,35 @@ class UniversalConverter(QWidget):
             for entity in raw_doc.modelspace():
                 if entity.dxftype() == 'POLYLINE':
                     pts = [(v.dxf.location.x, v.dxf.location.y) for v in entity.vertices]
-                    if len(pts) > 10:
+                    # 过滤小噪点杂线
+                    if len(pts) > 12:
                         if pts[0] != pts[-1]: pts.append(pts[0])
-                        # 强行合并过近的双线，拉直多余毛刺
-                        smoothed = self._douglas_peucker(pts, epsilon=1.8)
+                        
+                        # 💡 压扁算法：由于是闭合双线环，前半段是外壁，后半段是内壁
+                        # 我们通过折半配对取中点，把双层皮硬生生压成一根中心中线
+                        single_line_pts = []
+                        half_len = len(pts) // 2
+                        
+                        for i in range(half_len):
+                            pt_outer = pts[i]
+                            pt_inner = pts[len(pts) - 1 - i] # 镜像配对
+                            # 计算几何中心点
+                            mid_x = (pt_outer[0] + pt_inner[0]) / 2.0
+                            mid_y = (pt_outer[1] + pt_inner[1]) / 2.0
+                            single_line_pts.append((mid_x, mid_y))
+                        
+                        # 使用 Douglas-Peucker 对压扁后的中线做平滑拉直
+                        smoothed = self._douglas_peucker(single_line_pts, epsilon=1.2)
                         if len(smoothed) > 1:
-                            final_msp.add_lwpolyline(smoothed, dxfattribs={'color': 7, 'layer': 'CAD_FABRIC'})
+                            final_msp.add_lwpolyline(smoothed, dxfattribs={'color': 7, 'layer': 'CAD_SINGLE_LINE'})
 
             final_doc.saveas(final_dxf_path)
 
-            # 5. 扫尾工作
+            # 4. 扫尾
             for f in [temp_bmp, temp_raw_dxf]:
                 if os.path.exists(f): os.remove(f)
 
-            QMessageBox.information(self, "成功", f"提取完成！\n【高动态梯度单线版】：\n1. 图片自带的矩形大外框已被成功隔离并过滤！\n2. 弱色、深色内部线条已全部通过差值梯度补全！\n保存路径：{final_dxf_path}")
+            QMessageBox.information(self, "成功", f"单线化提取成功！\n【完美单线工业版】：已成功剥离空心多段线，强制融合成纯单股 CAD 裁片线！\n保存路径：{final_dxf_path}")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
