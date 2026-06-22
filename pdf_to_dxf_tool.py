@@ -399,13 +399,32 @@ class UniversalConverter(QWidget):
             msp = doc.modelspace()
 
             for track in all_tracks:
-                backbone_pts = self._douglas_peucker(track, epsilon=3.5)
-                if len(backbone_pts) > 2:
-                    smooth_cad_line = self._generate_b_spline(backbone_pts, num_samples_per_segment=20)
-                    if len(smooth_cad_line) > 1:
-                        msp.add_lwpolyline(smooth_cad_line, dxfattribs={'color': 7, 'layer': 'CAD_LONG_SPLINE'})
+                if len(track) < 2:
+                    continue
+                
+                # 🚀【超级回归直线滤网】：宏观距离包络法
+                start_pt = track[0]
+                end_pt = track[-1]
+                
+                max_deviation = 0.0
+                # 遍历整条长轨迹上的每一个像素点，计算它到首尾直线的最大偏离像素
+                for pt in track:
+                    dev = self._point_line_distance(pt, start_pt, end_pt)
+                    if dev > max_deviation:
+                        max_deviation = dev
+                
+                # 如果整条长线上所有点偏离首尾连线的垂直距离不超过 4.5 个像素，强制断定为物理直线！
+                if max_deviation <= 4.5:
+                    msp.add_line(start_pt, end_pt, dxfattribs={'color': 7, 'layer': 'CAD_STRAIGHT_LINE'})
                 else:
-                    msp.add_lwpolyline(backbone_pts, dxfattribs={'color': 7, 'layer': 'CAD_LONG_SPLINE'})
+                    # 如果不是直线，再走曲线处理：降维 -> 样条平滑
+                    backbone_pts = self._douglas_peucker(track, epsilon=3.5)
+                    if len(backbone_pts) > 2:
+                        smooth_cad_line = self._generate_b_spline(backbone_pts, num_samples_per_segment=20)
+                        if len(smooth_cad_line) > 1:
+                            msp.add_lwpolyline(smooth_cad_line, dxfattribs={'color': 7, 'layer': 'CAD_LONG_SPLINE'})
+                    else:
+                        msp.add_lwpolyline(backbone_pts, dxfattribs={'color': 7, 'layer': 'CAD_LONG_SPLINE'})
 
             doc.saveas(final_dxf_path)
             QMessageBox.information(self, "成功", f"图纸输出成功！\n路径：{final_dxf_path}")
