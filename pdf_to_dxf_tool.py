@@ -330,7 +330,8 @@ class UniversalConverter(QWidget):
 
         try:
             src_qimg = QImage(img_path)
-            if src_qimg.isNull(): raise ValueError("图像加载失败。")
+            if src_qimg.isNull():
+                raise ValueError("图像加载失败。")
             gray_img = src_qimg.convertToFormat(QImage.Format_Grayscale8)
             width, height = gray_img.width(), gray_img.height()
             
@@ -344,4 +345,80 @@ class UniversalConverter(QWidget):
                     p_down   = qGray(gray_img.pixel(x, y + 2))
 
                     if abs(p_right - p_left) > 12 or abs(p_down - p_up) > 12:
-                        if p_center <= p_left and p_center <= p_right and p_center < 225: skeleton_map[x][y] = True
+                        if p_center <= p_left and p_center <= p_right and p_center < 225:
+                            skeleton_map[x][y] = True
+                        elif p_center <= p_up and p_center <= p_down and p_center < 225:
+                            skeleton_map[x][y] = True
+
+            visited = [[False for _ in range(height)] for _ in range(width)]
+            all_tracks = []
+            directions = [(-1,0), (1,0), (0,-1), (0,1), (-1,-1), (-1,1), (1,-1), (1,1)]
+
+            for y in range(6, height - 6):
+                for x in range(6, width - 6):
+                    if skeleton_map[x][y] and not visited[x][y]:
+                        current_track = []
+                        cx, cy = x, y
+                        
+                        while True:
+                            visited[cx][cy] = True
+                            current_track.append((float(cx), float(height - cy)))
+                            
+                            found_next = False
+                            for dx, dy in directions:
+                                nx, ny = cx + dx, cy + dy
+                                if 0 <= nx < width and 0 <= ny < height:
+                                    if skeleton_map[nx][ny] and not visited[nx][ny]:
+                                        cx, cy = nx, ny
+                                        found_next = True
+                                        break
+                            
+                            if not found_next:
+                                closest_gap_pt = None
+                                min_gap_dist = 999.0
+                                for r_y in range(max(6, cy - 15), min(height - 6, cy + 15)):
+                                    for r_x in range(max(6, cx - 15), min(width - 6, cx + 15)):
+                                        if skeleton_map[r_x][r_y] and not visited[r_x][r_y]:
+                                            d = math.sqrt((r_x - cx)**2 + (r_y - cy)**2)
+                                            if d < min_gap_dist and d > 2:
+                                                min_gap_dist = d
+                                                closest_gap_pt = (r_x, r_y)
+                                
+                                if closest_gap_pt:
+                                    cx, cy = closest_gap_pt
+                                    found_next = True
+
+                            if not found_next:
+                                break
+                        
+                        if len(current_track) > 20:
+                            all_tracks.append(current_track)
+
+            doc = ezdxf.new('R2010')
+            doc.header['$MEASUREMENT'], doc.header['$INSUNITS'] = 1, 4
+            msp = doc.modelspace()
+
+            for track in all_tracks:
+                backbone_pts = self._douglas_peucker(track, epsilon=3.5)
+                if len(backbone_pts) > 2:
+                    smooth_cad_line = self._generate_b_spline(backbone_pts, num_samples_per_segment=20)
+                    if len(smooth_cad_line) > 1:
+                        msp.add_lwpolyline(smooth_cad_line, dxfattribs={'color': 7, 'layer': 'CAD_LONG_SPLINE'})
+                else:
+                    msp.add_lwpolyline(backbone_pts, dxfattribs={'color': 7, 'layer': 'CAD_LONG_SPLINE'})
+
+            doc.saveas(final_dxf_path)
+            QMessageBox.information(self, "成功", f"图纸输出成功！\n路径：{final_dxf_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
+
+def qGray(rgb): return (qRed(rgb) * 11 + qGreen(rgb) * 16 + qBlue(rgb) * 5) >> 5
+def qRed(rgb): return (rgb >> 16) & 0xff
+def qGreen(rgb): return (rgb >> 8) & 0xff
+def qBlue(rgb): return rgb & 0xff
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    ex = UniversalConverter()
+    ex.show()
+    sys.exit(app.exec_())
