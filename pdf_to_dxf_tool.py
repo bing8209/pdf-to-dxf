@@ -235,6 +235,72 @@ class UniversalConverter(QWidget):
         spline_points.append(points[-1])
         return spline_points
 
+    def _merge_collinear_lines(self, lines, angle_threshold_deg=4.0, dist_threshold=25.0):
+        """🚀 工业级终极合并核心：将倾角相同且距离邻近的断裂碎线段，融合成一根直达的长单线"""
+        if not lines: return []
+        merged_lines = []
+        used = [False] * len(lines)
+        
+        for i in range(len(lines)):
+            if used[i]: continue
+            p1, p2 = lines[i]
+            
+            # 计算基准线段的方向
+            dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+            base_angle = math.atan2(dy, dx)
+            
+            current_line = [p1, p2]
+            used[i] = True
+            
+            # 循环寻找可以融合的其他小碎段
+            progress = True
+            while progress:
+                progress = False
+                # 获取当前大线段的两端
+                curr_start = current_line[0]
+                curr_end = current_line[-1]
+                
+                for j in range(len(lines)):
+                    if used[j]: continue
+                    ta, tb = lines[j]
+                    
+                    # 计算目标碎段的方向
+                    tdx, tdy = tb[0] - ta[0], tb[1] - ta[1]
+                    target_angle = math.atan2(tdy, tdx)
+                    
+                    # 检查角度差是否在阈值内 (考虑正反双向)
+                    angle_diff = abs(base_angle - target_angle)
+                    if angle_diff > math.pi: angle_diff = 2 * math.pi - angle_diff
+                    if angle_diff > math.pi / 2: angle_diff = math.pi - angle_diff
+                    
+                    if angle_diff <= math.radians(angle_threshold_deg):
+                        # 检查四个端点对之间的最小距离，看是否连贯
+                        d1 = math.sqrt((curr_end[0]-ta[0])**2 + (curr_end[1]-ta[1])**2)
+                        d2 = math.sqrt((curr_end[0]-tb[0])**2 + (curr_end[1]-tb[1])**2)
+                        d3 = math.sqrt((curr_start[0]-ta[0])**2 + (curr_start[1]-ta[1])**2)
+                        d4 = math.sqrt((curr_start[0]-tb[0])**2 + (curr_start[1]-tb[1])**2)
+                        
+                        min_d = min(d1, d2, d3, d4)
+                        # 检查碎段到大线段延长线的点线距离，防止平行错开的线被错误合并
+                        mid_pt = ((ta[0]+tb[0])/2.0, (ta[1]+tb[1])/2.0)
+                        side_dist = self._point_line_distance(mid_pt, curr_start, curr_end)
+                        
+                        if min_d <= dist_threshold and side_dist <= 5.0:
+                            # 找到了符合同向共线的小短线，进行延长合并
+                            all_pts = current_line + [ta, tb]
+                            # 重新沿着主轴方向对所有点排序，找出新的最远两端点
+                            if abs(dx) > abs(dy):
+                                all_pts.sort(key=lambda p: p[0])
+                            else:
+                                all_pts.sort(key=lambda p: p[1])
+                            
+                            current_line = [all_pts[0], all_pts[-1]]
+                            used[j] = True
+                            progress = True
+                            
+            merged_lines.append((current_line[0], current_line[-1]))
+        return merged_lines
+
     def convert_pdf_to_dxf(self):
         pdf_path, output_dir = self.txt_pdf_input.text(), self.txt_pdf_output.text()
         if not pdf_path or not os.path.exists(pdf_path) or not output_dir: return
@@ -398,26 +464,25 @@ class UniversalConverter(QWidget):
             doc.header['$MEASUREMENT'], doc.header['$INSUNITS'] = 1, 4
             msp = doc.modelspace()
 
+            raw_straight_lines = []
+
             for track in all_tracks:
                 if len(track) < 2:
                     continue
                 
-                # 🚀【超级回归直线滤网】：宏观距离包络法
                 start_pt = track[0]
                 end_pt = track[-1]
                 
                 max_deviation = 0.0
-                # 遍历整条长轨迹上的每一个像素点，计算它到首尾直线的最大偏离像素
                 for pt in track:
                     dev = self._point_line_distance(pt, start_pt, end_pt)
                     if dev > max_deviation:
                         max_deviation = dev
                 
-                # 如果整条长线上所有点偏离首尾连线的垂直距离不超过 4.5 个像素，强制断定为物理直线！
                 if max_deviation <= 4.5:
-                    msp.add_line(start_pt, end_pt, dxfattribs={'color': 7, 'layer': 'CAD_STRAIGHT_LINE'})
+                    # 先收集这些被判定为直线的碎片，暂不写入文件
+                    raw_straight_lines.append((start_pt, end_pt))
                 else:
-                    # 如果不是直线，再走曲线处理：降维 -> 样条平滑
                     backbone_pts = self._douglas_peucker(track, epsilon=3.5)
                     if len(backbone_pts) > 2:
                         smooth_cad_line = self._generate_b_spline(backbone_pts, num_samples_per_segment=20)
@@ -425,6 +490,13 @@ class UniversalConverter(QWidget):
                             msp.add_lwpolyline(smooth_cad_line, dxfattribs={'color': 7, 'layer': 'CAD_LONG_SPLINE'})
                     else:
                         msp.add_lwpolyline(backbone_pts, dxfattribs={'color': 7, 'layer': 'CAD_LONG_SPLINE'})
+
+            # 🎯 执行核心修复：对所有直线碎片进行共线大熔焊融合
+            fin_straight_lines = self._merge_collinear_lines(raw_straight_lines, angle_threshold_deg=4.5, dist_threshold=35.0)
+            
+            # 将最终合并完毕的完美宏观大直线写入 DXF
+            for s_pt, e_pt in fin_straight_lines:
+                msp.add_line(s_pt, e_pt, dxfattribs={'color': 7, 'layer': 'CAD_STRAIGHT_LINE'})
 
             doc.saveas(final_dxf_path)
             QMessageBox.information(self, "成功", f"图纸输出成功！\n路径：{final_dxf_path}")
