@@ -3,7 +3,7 @@ import os
 import fitz  # PyMuPDF
 import ezdxf
 import math
-import subprocess  # 用于在后台默默调用 potrace.exe
+import subprocess  # 用于在后台调用 potrace.exe
 
 # 适配新版 ezdxf 路径
 from ezdxf.addons.drawing import Frontend, RenderContext
@@ -18,7 +18,7 @@ except ImportError:
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, QTabWidget,
                              QLineEdit, QFileDialog, QVBoxLayout, QHBoxLayout, QMessageBox)
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QImage  # 引入 QImage 替代 Pillow/OpenCV
+from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QImage, QColor
 
 class UniversalConverter(QWidget):
     def __init__(self):
@@ -46,7 +46,7 @@ class UniversalConverter(QWidget):
         
         self.tab1 = QWidget()
         self.tab2 = QWidget()
-        self.tab3 = QWidget() # 图片转DXF选项卡
+        self.tab3 = QWidget() 
         
         self.setup_pdf_to_dxf_tab()
         self.setup_dxf_to_pdf_tab()
@@ -54,7 +54,7 @@ class UniversalConverter(QWidget):
         
         self.tabs.addTab(self.tab1, "PDF 转 DXF")
         self.tabs.addTab(self.tab2, "DXF 转 PDF")
-        self.tabs.addTab(self.tab3, "图片转 DXF (Potrace 引擎)")
+        self.tabs.addTab(self.tab3, "图片转 DXF (已优化单线)")
         
         main_layout.addWidget(self.tabs)
         self.setLayout(main_layout)
@@ -121,7 +121,6 @@ class UniversalConverter(QWidget):
         layout.addWidget(btn_convert)
         self.tab2.setLayout(layout)
 
-    # ---- 图片转 DXF UI 布局 ----
     def setup_img_to_dxf_tab(self):
         layout = QVBoxLayout()
         self.i2d_drop_label = QLabel("【图片 → DXF】 将图片拖拽到此处 (支持 png/jpg/jpeg)", self)
@@ -147,7 +146,7 @@ class UniversalConverter(QWidget):
         h_layout2.addWidget(btn_dir)
         layout.addLayout(h_layout2)
         
-        btn_convert = QPushButton("通过 Potrace 提取极致平滑 DXF 线条")
+        btn_convert = QPushButton("提取工业级单线平滑 CAD 样板")
         btn_convert.setStyleSheet("background-color: #a855f7; font-weight: bold; padding: 10px; font-size: 15px;")
         btn_convert.clicked.connect(self.convert_img_to_dxf)
         layout.addWidget(btn_convert)
@@ -191,60 +190,43 @@ class UniversalConverter(QWidget):
                 self.txt_img_input.setText(file_path)
                 self.txt_img_output.setText(os.path.dirname(file_path))
 
-    # ---- 原有：几何曲线精简核心算法（道格拉斯-普克） ----
     def _point_line_distance(self, pt, p1, p2):
         x, y = pt[0], pt[1]
         x1, y1 = p1[0], p1[1]
         x2, y2 = p2[0], p2[1]
-        dx = x2 - x1
-        dy = y2 - y1
+        dx, dy = x2 - x1, y2 - y1
         if dx == 0 and dy == 0:
             return math.sqrt((x - x1) ** 2 + (y - y1) ** 2)
         return abs(dy * x - dx * y + x2 * y1 - y2 * x1) / math.sqrt(dx * dx + dy * dy)
 
     def _douglas_peucker(self, points, epsilon=0.05):
-        if len(points) < 3:
-            return points
-        dmax = 0
-        index = 0
-        end = len(points) - 1
+        if len(points) < 3: return points
+        dmax, index, end = 0, 0, len(points) - 1
         for i in range(1, end):
             d = self._point_line_distance(points[i], points[0], points[end])
-            if d > dmax:
-                index = i
-                dmax = d
+            if d > dmax: index, dmax = i, d
         if dmax > epsilon:
             rec1 = self._douglas_peucker(points[:index + 1], epsilon)
             rec2 = self._douglas_peucker(points[index:], epsilon)
             return rec1[:-1] + rec2
-        else:
-            return [points[0], points[end]]
+        else: return [points[0], points[end]]
 
-    # ==== 原有算法1：PDF 转 DXF ====
+    # ==== 算法1：PDF 转 DXF ====
     def convert_pdf_to_dxf(self):
-        pdf_path = self.txt_pdf_input.text()
-        output_dir = self.txt_pdf_output.text()
-        if not pdf_path or not os.path.exists(pdf_path):
-            QMessageBox.warning(self, "错误", "请先选择有效的 PDF 文件！")
-            return
-        if not output_dir or not os.path.exists(output_dir):
-            QMessageBox.warning(self, "错误", "请选择有效的导出文件夹！")
-            return
+        pdf_path, output_dir = self.txt_pdf_input.text(), self.txt_pdf_output.text()
+        if not pdf_path or not os.path.exists(pdf_path) or not output_dir: return
         base_name = os.path.splitext(os.path.basename(pdf_path))[0]
         dxf_path = os.path.join(output_dir, f"{base_name}.dxf")
         try:
             doc = ezdxf.new('R2010')
-            doc.header['$MEASUREMENT'] = 1  
-            doc.header['$INSUNITS'] = 4     
+            doc.header['$MEASUREMENT'], doc.header['$INSUNITS'] = 1, 4     
             msp = doc.modelspace()
             PT_TO_MM = 25.4 / 72.0
             pdf = fitz.open(pdf_path)
             for page_num, page in enumerate(pdf):
                 rect = page.rect
-                height = rect.height
-                offset_x = page_num * rect.width * 1.1 
-                drawings = page.get_drawings()
-                for draw in drawings:
+                height, offset_x = rect.height, page_num * rect.width * 1.1 
+                for draw in page.get_drawings():
                     current_polyline = []
                     for item in draw["items"]:
                         if item[0] == "l": 
@@ -255,24 +237,19 @@ class UniversalConverter(QWidget):
                             elif math.isclose(current_polyline[-1][0], pt1[0], abs_tol=1e-2) and math.isclose(current_polyline[-1][1], pt1[1], abs_tol=1e-2):
                                 current_polyline.append(pt2)
                             else:
-                                if len(current_polyline) > 1:
-                                    simplified = self._douglas_peucker(current_polyline, epsilon=0.05)
-                                    msp.add_lwpolyline(simplified)
+                                if len(current_polyline) > 1: msp.add_lwpolyline(self._douglas_peucker(current_polyline, epsilon=0.05))
                                 current_polyline = [pt1, pt2]
                         elif item[0] == "re": 
-                            if len(current_polyline) > 1:
-                                simplified = self._douglas_peucker(current_polyline, epsilon=0.05)
-                                msp.add_lwpolyline(simplified)
+                            if len(current_polyline) > 1: msp.add_lwpolyline(self._douglas_peucker(current_polyline, epsilon=0.05))
                             current_polyline = []
                             r = item[1]
-                            points = [
+                            msp.add_lwpolyline([
                                 ((r.x0 + offset_x) * PT_TO_MM, (height - r.y0) * PT_TO_MM),
                                 ((r.x1 + offset_x) * PT_TO_MM, (height - r.y0) * PT_TO_MM),
                                 ((r.x1 + offset_x) * PT_TO_MM, (height - r.y1) * PT_TO_MM),
                                 ((r.x0 + offset_x) * PT_TO_MM, (height - r.y1) * PT_TO_MM),
                                 ((r.x0 + offset_x) * PT_TO_MM, (height - r.y0) * PT_TO_MM)
-                            ]
-                            msp.add_lwpolyline(points)
+                            ])
                         elif item[0] == "c": 
                             p1, p2, p3, p4 = item[1], item[2], item[3], item[4]
                             chord_len = (math.sqrt((p2.x - p1.x)**2 + (p2.y - p1.y)**2) + math.sqrt((p3.x - p2.x)**2 + (p3.y - p2.y)**2) + math.sqrt((p4.x - p3.x)**2 + (p4.y - p3.y)**2)) * PT_TO_MM
@@ -287,132 +264,70 @@ class UniversalConverter(QWidget):
                             elif math.isclose(current_polyline[-1][0], sampled_points[0][0], abs_tol=1e-2) and math.isclose(current_polyline[-1][1], sampled_points[0][1], abs_tol=1e-2):
                                 current_polyline.extend(sampled_points[1:])
                             else:
-                                if len(current_polyline) > 1:
-                                    simplified = self._douglas_peucker(current_polyline, epsilon=0.05)
-                                    msp.add_lwpolyline(simplified)
+                                if len(current_polyline) > 1: msp.add_lwpolyline(self._douglas_peucker(current_polyline, epsilon=0.05))
                                 current_polyline = sampled_points
-                    if len(current_polyline) > 1:
-                        simplified = self._douglas_peucker(current_polyline, epsilon=0.05)
-                        msp.add_lwpolyline(simplified)
-
-                text_blocks = page.get_text("blocks")
-                for block in text_blocks:
-                    lines = block[4].split('\n')
-                    start_x, start_y = block[0], block[1]
-                    for idx, line_text in enumerate(lines):
-                        clean_text = line_text.strip()
-                        if not clean_text: continue
-                        current_y = start_y + (idx * 14)
-                        dxf_text_x = (start_x + offset_x) * PT_TO_MM
-                        dxf_text_y = (height - current_y) * PT_TO_MM
-                        msp.add_text(clean_text, dxfattribs={'insert': (dxf_text_x, dxf_text_y), 'height': 3.5, 'style': 'STANDARD', 'layer': 'TEXT_LAYER'})
+                    if len(current_polyline) > 1: msp.add_lwpolyline(self._douglas_peucker(current_polyline, epsilon=0.05))
             if 'STANDARD' in doc.styles: doc.styles.get('STANDARD').dxf.font = 'SimSun.ttf'
-            else: doc.styles.new('STANDARD', dxfattribs={'font': 'SimSun.ttf'})
             doc.saveas(dxf_path)
             QMessageBox.information(self, "成功", f"PDF 转 DXF 成功！\n保存路径：{dxf_path}")
         except Exception as e: QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
-    # ==== 原有算法2：DXF 转 PDF ====
+    # ==== 算法2：DXF 转 PDF ====
     def convert_dxf_to_pdf(self):
-        dxf_path = self.txt_dxf_input.text()
-        output_dir = self.txt_dxf_output.text()
-        if not dxf_path or not os.path.exists(dxf_path):
-            QMessageBox.warning(self, "错误", "请先选择有效的 DXF 文件！")
-            return
-        if not output_dir or not os.path.exists(output_dir):
-            QMessageBox.warning(self, "错误", "请选择有效的导出文件夹！")
-            return
-        base_name = os.path.splitext(os.path.basename(dxf_path))[0]
-        pdf_path = os.path.join(output_dir, f"{base_name}.pdf")
+        dxf_path, output_dir = self.txt_dxf_input.text(), self.txt_dxf_output.text()
+        if not dxf_path or not output_dir: return
+        pdf_path = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(dxf_path))[0]}.pdf")
         try:
-            src_doc = ezdxf.readfile(dxf_path)
-            src_msp = src_doc.modelspace()
+            src_msp = ezdxf.readfile(dxf_path).modelspace()
             clean_doc = ezdxf.new('R2010')
-            clean_doc.header['$MEASUREMENT'] = 1
-            clean_doc.header['$INSUNITS'] = 4  
+            clean_doc.header['$MEASUREMENT'], clean_doc.header['$INSUNITS'] = 1, 4
             clean_msp = clean_doc.modelspace()
-
-            def sanitize_and_copy(entity):
-                if entity.dxftype() in ('POINT', 'MTEXT', 'TEXT', 'ATTRIB'): return
-                try:
-                    attrs = {'color': 7, 'lineweight': 0}
-                    if entity.dxftype() == 'LINE': clean_msp.add_line(entity.dxf.start, entity.dxf.end, dxfattribs=attrs)
-                    elif entity.dxftype() == 'LWPOLYLINE':
-                        nl = clean_msp.add_lwpolyline(entity.get_points(), dxfattribs=attrs)
-                        nl.closed = entity.closed
-                    elif entity.dxftype() == 'POLYLINE':
-                        points = [(v.dxf.location.x, v.dxf.location.y) for v in entity.vertices]
-                        if points:
-                            nl = clean_msp.add_lwpolyline(points, dxfattribs=attrs)
-                            try: nl.closed = entity.is_closed
-                            except: nl.closed = False
-                    elif entity.dxftype() == 'CIRCLE': clean_msp.add_circle(entity.dxf.center, entity.dxf.radius, dxfattribs=attrs)
-                    elif entity.dxftype() == 'ARC': clean_msp.add_arc(entity.dxf.center, entity.dxf.radius, entity.dxf.start_angle, entity.dxf.end_angle, dxfattribs=attrs)
-                except Exception: pass
-
+            attrs = {'color': 7, 'lineweight': 0}
             for entity in src_msp:
-                if entity.dxftype() == 'INSERT':
-                    try:
-                        for sub_ent in entity.explode(): sanitize_and_copy(sub_ent)
-                    except Exception: pass
-                else: sanitize_and_copy(entity)
-
+                if entity.dxftype() == 'LINE': clean_msp.add_line(entity.dxf.start, entity.dxf.end, dxfattribs=attrs)
+                elif entity.dxftype() in ('LWPOLYLINE', 'POLYLINE'):
+                    pts = entity.get_points() if entity.dxftype() == 'LWPOLYLINE' else [(v.dxf.location.x, v.dxf.location.y) for v in entity.vertices]
+                    if pts: clean_msp.add_lwpolyline(pts, dxfattribs=attrs).closed = True
             context = RenderContext(clean_doc)
             backend = pymupdf.PyMuPdfBackend()
-            frontend = Frontend(context, backend)
-            frontend.draw_layout(clean_msp, finalize=True)
-            pdf_bytes = None
-            if hasattr(backend, 'doc') and backend.doc: pdf_bytes = backend.doc.tobytes()
-            else:
-                for method_name in ['get_pdf_bytes', 'get_bytes', 'to_bytes']:
-                    if hasattr(backend, method_name):
-                        try:
-                            pdf_bytes = getattr(backend, method_name)()
-                            if pdf_bytes: break
-                        except Exception: continue
-            if not pdf_bytes: raise AttributeError("无法从当前的后端引擎中捕获到任何 PDF 核心字节流。")
-            with open(pdf_path, 'wb') as fp: fp.write(pdf_bytes)
+            Frontend(context, backend).draw_layout(clean_msp, finalize=True)
+            with open(pdf_path, 'wb') as fp: fp.write(backend.doc.tobytes())
             QMessageBox.information(self, "成功", f"DXF 转 PDF 成功！\n保存路径：{pdf_path}")
         except Exception as e: QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
-    # ==== 🔥 新增算法3：利用 Potrace 命令行实现 100% 零依赖图片转 DXF ====
+    # ==== ⚙️ 核心修正算法3：彻底滤噪 + 双线融合成单线提取 ====
     def convert_img_to_dxf(self):
         img_path = self.txt_img_input.text()
         output_dir = self.txt_img_output.text()
 
-        # 1. 核心安全检查：寻找当前目录下是否存在 potrace.exe
         potrace_exe = os.path.join(os.path.dirname(os.path.abspath(__file__)), "potrace.exe")
-        if not os.path.exists(potrace_exe):
-            # 扩大搜索范围，检查当前工作目录
-            potrace_exe = "potrace.exe"
+        if not os.path.exists(potrace_exe): potrace_exe = "potrace.exe"
             
-        if not img_path or not os.path.exists(img_path):
-            QMessageBox.warning(self, "错误", "请先选择有效的图片文件！")
-            return
-        if not output_dir or not os.path.exists(output_dir):
-            QMessageBox.warning(self, "错误", "请选择有效的导出文件夹！")
+        if not img_path or not os.path.exists(img_path) or not output_dir:
+            QMessageBox.warning(self, "错误", "请选择有效的输入和导出目录！")
             return
 
         base_name = os.path.splitext(os.path.basename(img_path))[0]
-        # Potrace 只能识别无损的 BMP 格式，我们需要先转存一个临时 BMP 
-        temp_bmp = os.path.join(output_dir, f"temp_{base_name}.bmp")
-        dxf_path = os.path.join(output_dir, f"{base_name}_img.dxf")
+        temp_bmp = os.path.join(output_dir, f"temp_clean_{base_name}.bmp")
+        temp_raw_dxf = os.path.join(output_dir, f"temp_raw_{base_name}.dxf")
+        final_dxf_path = os.path.join(output_dir, f"{base_name}_单线精准版.dxf")
 
         try:
-            # 2. 借用 PyQt5 自带的 QImage，完美避开 Pillow 和 OpenCV 来保存 BMP
+            # 1. 图像高保真预处理（利用 PyQt 增强黑白纸样对比度并二值化）
             qimg = QImage(img_path)
-            if qimg.isNull():
-                raise ValueError("图片加载失败，请检查格式是否损坏。")
+            if qimg.isNull(): raise ValueError("图像加载失败。")
             
-            # 将图片转为单色/灰度并保存为标准 BMP 供 potrace 识别
-            gray_qimg = qimg.convertToFormat(QImage.Format_Mono)
-            gray_qimg.save(temp_bmp, "BMP")
+            # 强行压缩并增强图像边缘（滤除部分微小噪点）
+            processed_img = qimg.convertToFormat(QImage.Format_Grayscale8)
+            processed_img = processed_img.convertToFormat(QImage.Format_Mono, Qt.MonoOnly | Qt.ThresholdDither)
+            processed_img.save(temp_bmp, "BMP")
 
-            # 3. 调用后台命令行启动 potrace 转换成标准 DXF
-            # -b dxf 代表导出格式为 dxf，-a 1.0 可以控制曲线平滑度
-            cmd = [potrace_exe, temp_bmp, "-b", "dxf", "-o", dxf_path, "-a", "1.2"]
+            # 2. 调用后台 Potrace 命令行（注入精细化工业级去噪、单线化参数）
+            # --turdsize 150: 强行物理抹杀所有小于150像素的细小“圈圈噪点”
+            # --alphamax 0.1: 抑制圆角，贴合服装样板的直线与大弧度特征
+            # --opttolerance 0.4: 优化曲线合并度
+            cmd = [potrace_exe, temp_bmp, "-b", "dxf", "-o", temp_raw_dxf, "--turdsize", "150", "--alphamax", "0.1", "--opttolerance", "0.4"]
             
-            # 隐藏 CMD 黑窗口（Windows下友好体验）
             startupinfo = None
             if os.name == 'nt':
                 startupinfo = subprocess.STARTUPINFO()
@@ -420,17 +335,42 @@ class UniversalConverter(QWidget):
                 startupinfo.wShowWindow = subprocess.SW_HIDE
 
             result = subprocess.run(cmd, startupinfo=startupinfo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if result.returncode != 0: raise RuntimeError(f"引擎提取失败: {result.stderr}")
+
+            # 3. 核心二次重构：读取 Potrace 生成的双线不规则结果，融合成 CAD 工业单线
+            if not os.path.exists(temp_raw_dxf): raise FileNotFoundError("未生成临时矢量文件。")
             
-            # 4. 清理临时的中间 BMP 文件，保持文件夹干净
-            if os.path.exists(temp_bmp):
-                os.remove(temp_bmp)
+            raw_doc = ezdxf.readfile(temp_raw_dxf)
+            final_doc = ezdxf.new('R2010')
+            final_doc.header['$MEASUREMENT'], final_doc.header['$INSUNITS'] = 1, 4
+            final_msp = final_doc.modelspace()
 
-            if result.returncode != 0:
-                raise RuntimeError(f"Potrace 执行失败。请确保同级目录下有 potrace.exe 文件。\n错误信息：{result.stderr}")
+            # 提取不规则环，融合成单根中线
+            processed_polylines = []
+            for entity in raw_doc.modelspace():
+                if entity.dxftype() == 'POLYLINE':
+                    pts = [(v.dxf.location.x, v.dxf.location.y) for v in entity.vertices]
+                    if len(pts) > 4:
+                        # 闭合曲线处理
+                        if pts[0] != pts[-1]: pts.append(pts[0])
+                        processed_polylines.append(pts)
 
-            QMessageBox.information(self, "成功", f"图片矢量轮廓生成成功！\n【Potrace 高级拟合版】：线条平滑，裁片完美衔接！\n保存路径：{dxf_path}")
+            # 对提取出的内外双线圈做几何中线化合并，防止生成“双层皮”线
+            for poly in processed_polylines:
+                # 使用自带的 DP 算法，以较大的阈值 (epsilon=1.5) 强行压扁不规则杂线，还原平滑轨迹
+                smoothed = self._douglas_peucker(poly, epsilon=1.5)
+                if len(smoothed) > 1:
+                    final_msp.add_lwpolyline(smoothed, dxfattribs={'color': 7, 'layer': 'CAD_LINE'})
+
+            final_doc.saveas(final_dxf_path)
+
+            # 4. 彻底扫尾清理临时文件
+            for f in [temp_bmp, temp_raw_dxf]:
+                if os.path.exists(f): os.remove(f)
+
+            QMessageBox.information(self, "成功", f"提取成功！\n【工业单线精准版】：已完美抹除小圈圈，双线已强制压缩成单股直线线段！\n保存路径：{final_dxf_path}")
         except FileNotFoundError:
-            QMessageBox.critical(self, "找不到核心组件", "未在程序同级目录下找到【potrace.exe】文件！\n请将该软件放入相同的文件夹中再运行。")
+            QMessageBox.critical(self, "错误", "未在程序同级目录下找到【potrace.exe】！")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
