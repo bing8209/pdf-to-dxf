@@ -53,7 +53,7 @@ class UniversalConverter(QWidget):
         
         self.tabs.addTab(self.tab1, "PDF 转 DXF")
         self.tabs.addTab(self.tab2, "DXF 转 PDF")
-        self.tabs.addTab(self.tab3, "图片转 DXF (彻底消除锯齿版)")
+        self.tabs.addTab(self.tab3, "图片转 DXF (长流线完美补空版)")
         
         main_layout.addWidget(self.tabs)
         self.setLayout(main_layout)
@@ -145,7 +145,7 @@ class UniversalConverter(QWidget):
         h_layout2.addWidget(btn_dir)
         layout.addLayout(h_layout2)
         
-        btn_convert = QPushButton("暴力消除微观锯齿 · 导出绝对平滑单股线")
+        btn_convert = QPushButton("智能自动补空 · 融合成数十厘米工业流线")
         btn_convert.setStyleSheet("background-color: #a855f7; font-weight: bold; padding: 10px; font-size: 15px;")
         btn_convert.clicked.connect(self.convert_img_to_dxf)
         layout.addWidget(btn_convert)
@@ -204,47 +204,45 @@ class UniversalConverter(QWidget):
             return rec1[:-1] + rec2
         else: return [points[0], points[end]]
 
-    # 💡 强力后处理升级版：工业级滑动均值柔化滤镜（Window Smoothing Filter）
-    # 它会像用海绵一样，把前后几个像素点的坐标进行平均融合，彻底抹杀局部1-2个像素的突变毛刺
-    def _apply_window_smoothing(self, points, window_size=5):
-        if len(points) < window_size: return points
-        smoothed = []
-        half_w = window_size // 2
-        
-        # 首尾端点保持绝对锁定，防止大轮廓缩水
-        for i in range(len(points)):
-            if i < half_w or i >= len(points) - half_w:
-                smoothed.append(points[i])
-            else:
-                # 抓取当前点前后一个窗口内的所有点求数学中心值
-                sum_x, sum_y = 0.0, 0.0
-                for w in range(-half_w, half_w + 1):
-                    sum_x += points[i + w][0]
-                    sum_y += points[i + w][1]
-                smoothed.append((sum_x / window_size, sum_y / window_size))
-        return smoothed
-
-    def _smooth_polyline_bezier(self, points, smooth_factor=0.35):
+    # 💡 强力数学重构：高阶服装 CAD 三次 B 样条数学流线器（彻底碾碎2cm短木棍折线）
+    def _generate_b_spline(self, points, num_samples_per_segment=15):
         if len(points) < 3: return points
-        smoothed_points = [points[0]]
         
-        for i in range(1, len(points) - 1):
-            p0, p1, p2 = points[i-1], points[i], points[i+1]
-            v1_x, v1_y = p1[0] - p0[0], p1[1] - p0[1]
-            v2_x, v2_y = p2[0] - p1[0], p2[1] - p1[1]
+        spline_points = []
+        # 在控制点阵列首尾进行双重虚插值，确保物理起止端点不缩水
+        pts = [points[0]] + points + [points[-1]]
+        
+        for i in range(1, len(pts) - 2):
+            p0, p1, p2, p3 = pts[i-1], pts[i], pts[i+1], pts[i+2]
             
-            tangent_x = (v1_x + v2_x) * smooth_factor
-            tangent_y = (v1_y + v2_y) * smooth_factor
-            
-            # 在硬拐角两翼只平滑插入2个微元，避免生成过多零碎的细小多段线，进一步合并锯齿
-            for t in [0.33, 0.66]:
-                mx = p1[0] - (1 - t) * tangent_x * 0.5 + t * tangent_x * 0.5
-                my = p1[1] - (1 - t) * tangent_y * 0.5 + t * tangent_y * 0.5
-                smoothed_points.append((mx, my))
-            smoothed_points.append(p1)
-            
-        smoothed_points.append(points[-1])
-        return smoothed_points
+            # 智能硬弯道拦截器：如果发生大于 60 度的工业急转弯，就不强行柔化，保留锐利的裁剪拐角
+            v1 = (p2[0]-p1[0], p2[1]-p1[1])
+            v2 = (p3[0]-p2[0], p3[1]-p2[1])
+            len1 = math.sqrt(v1[0]**2 + v1[1]**2)
+            len2 = math.sqrt(v2[0]**2 + v2[1]**2)
+            if len1 > 0 and len2 > 0:
+                cos_angle = (v1[0]*v2[0] + v1[1]*v2[1]) / (len1 * len2)
+                if cos_angle < 0.5: # 夹角超过 60 度 
+                    if p1 not in spline_points: spline_points.append(p1)
+                    if p2 not in spline_points: spline_points.append(p2)
+                    continue
+
+            # 标准流线区域：运行三次 B 样条矩阵基函数插值，生成绝对丝滑的水流质感长曲线
+            for j in range(num_samples_per_segment):
+                t = j / num_samples_per_segment
+                
+                # B-Spline 基函数系数
+                a1 = (-t**3 + 3*t**2 - 3*t + 1) / 6.0
+                a2 = (3*t**3 - 6*t**2 + 4) / 6.0
+                a3 = (-3*t**3 + 3*t**2 + 3*t + 1) / 6.0
+                a4 = t**3 / 6.0
+                
+                qx = a1*p0[0] + a2*p1[0] + a3*p2[0] + a4*p3[0]
+                qy = a1*p0[1] + a2*p1[1] + a3*p2[1] + a4*p3[1]
+                spline_points.append((qx, qy))
+                
+        spline_points.append(points[-1])
+        return spline_points
 
     # ==== 算法1：PDF 转 DXF ====
     def convert_pdf_to_dxf(self):
@@ -330,7 +328,7 @@ class UniversalConverter(QWidget):
             QMessageBox.information(self, "成功", f"DXF 转 PDF 成功！\n保存路径：{pdf_path}")
         except Exception as e: QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
-    # ==== ⚙️ 终极后处理闭环：高强度滤波抗锯齿算法 ====
+    # ==== ⚙️ 终极重构模块：图论爬行 + 空间雷达自动补齐 + 三次 B 样条流线化 ====
     def convert_img_to_dxf(self):
         img_path = self.txt_img_input.text()
         output_dir = self.txt_img_output.text()
@@ -340,16 +338,15 @@ class UniversalConverter(QWidget):
             return
 
         base_name = os.path.splitext(os.path.basename(img_path))[0]
-        final_dxf_path = os.path.join(output_dir, f"{base_name}_极致平滑单线版.dxf")
+        final_dxf_path = os.path.join(output_dir, f"{base_name}_工业长流线单线版.dxf")
 
         try:
-            # 1. 载入图像并提取灰度
             src_qimg = QImage(img_path)
             if src_qimg.isNull(): raise ValueError("图像加载失败。")
             gray_img = src_qimg.convertToFormat(QImage.Format_Grayscale8)
             width, height = gray_img.width(), gray_img.height()
             
-            # 2. 定位中轴骨架
+            # 1. 骨架精细提取
             skeleton_map = [[False for _ in range(height)] for _ in range(width)]
             for y in range(6, height - 6):
                 for x in range(6, width - 6):
@@ -360,12 +357,10 @@ class UniversalConverter(QWidget):
                     p_down   = qGray(gray_img.pixel(x, y + 2))
 
                     if abs(p_right - p_left) > 12 or abs(p_down - p_up) > 12:
-                        if p_center <= p_left and p_center <= p_right and p_center < 225:
-                            skeleton_map[x][y] = True
-                        elif p_center <= p_up and p_center <= p_down and p_center < 225:
-                            skeleton_map[x][y] = True
+                        if p_center <= p_left and p_center <= p_right and p_center < 225: skeleton_map[x][y] = True
+                        elif p_center <= p_up and p_center <= p_down and p_center < 225: skeleton_map[x][y] = True
 
-            # 3. 链式拓扑寻线爬行
+            # 2. 🧠 空间雷达自动补空 + 链式拓扑寻线爬行
             visited = [[False for _ in range(height)] for _ in range(width)]
             all_tracks = []
             directions = [(-1,0), (1,0), (0,-1), (0,1), (-1,-1), (-1,1), (1,-1), (1,1)]
@@ -388,46 +383,18 @@ class UniversalConverter(QWidget):
                                         cx, cy = nx, ny
                                         found_next = True
                                         break
-                            if not found_next: break
-                        
-                        if len(current_track) > 8: # 略微提高最短线条过滤阈值，去掉孤立碎碎点
-                            all_tracks.append(current_track)
-
-            # 4. 🚀 关键升级：强力双重消柔后处理（滑动平均去刺 + 强力剪枝）
-            doc = ezdxf.new('R2010')
-            doc.header['$MEASUREMENT'], doc.header['$INSUNITS'] = 1, 4
-            msp = doc.modelspace()
-
-            for track in all_tracks:
-                # 步骤 A：先通过滑动窗口均值滤波器，直接在原始像素点序列上把微小抖动的硬锯齿全部“揉圆”
-                smoothed_pixels = self._apply_window_smoothing(track, window_size=7) # window_size=7 具备强力的去噪平滑能力
-                
-                # 步骤 B：强力降采样剪枝。将阈值从之前的 1.2 放大到 4.5
-                # 这会强制剥离掉所有微观层面的折线段，只在真正发生宏观转向时才建立 CAD 节点
-                backbone_pts = self._douglas_peucker(smoothed_pixels, epsilon=4.5)
-                
-                if len(backbone_pts) > 2:
-                    # 步骤 C：最后用贝塞尔样条切线做最后的流畅上色
-                    smooth_cad_line = self._smooth_polyline_bezier(backbone_pts, smooth_factor=0.35)
-                    if len(smooth_cad_line) > 1:
-                        msp.add_lwpolyline(smooth_cad_line, dxfattribs={'color': 7, 'layer': 'CAD_SMOOTH_LINE'})
-                elif len(backbone_pts) == 2:
-                    msp.add_lwpolyline(backbone_pts, dxfattribs={'color': 7, 'layer': 'CAD_SMOOTH_LINE'})
-
-            doc.saveas(final_dxf_path)
-
-            QMessageBox.information(self, "成功", f"图纸输出大功告成！\n【极致平滑单线版】：\n1. 引入了工业级滑动窗口均值滤波，强行揉平了照片自带的微跳跃锯齿。\n2. 降采样步长已最大化，短折线基本完全退化合并为了极度流畅的大主干弧线。")
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
-
-# PyQt 全局快速获取灰度辅助函数
-def qGray(rgb): return (qRed(rgb) * 11 + qGreen(rgb) * 16 + qBlue(rgb) * 5) >> 5
-def qRed(rgb): return (rgb >> 16) & 0xff
-def qGreen(rgb): return (rgb >> 8) & 0xff
-def qBlue(rgb): return rgb & 0xff
-
-if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    ex = UniversalConverter()
-    ex.show()
-    sys.exit(app.exec_off()) if hasattr(app, 'exec_off') else sys.exit(app.exec_())
+                            
+                            # 🚀 雷达智能补空逻辑：如果前方遇到断头路，开启15像素半径的空间隐形桥梁搜寻
+                            if not found_next:
+                                closest_gap_pt = None
+                                min_gap_dist = 999.0
+                                # 在 15 像素范围内探测未访问的骨架
+                                for r_y in range(max(6, cy - 15), min(height - 6, cy + 15)):
+                                    for r_x in range(max(6, cx - 15), min(width - 6, cx + 15)):
+                                        if skeleton_map[r_x][r_y] and not visited[r_x][r_y]:
+                                            d = math.sqrt((r_x - cx)**2 + (r_y - cy)**2)
+                                            if d < min_gap_dist and d > 2:
+                                                min_gap_dist = d
+                                                closest_gap_pt = (r_x, r_y)
+                                
+                                # 如果探测到空缺对岸有续接线条，强行生成“
