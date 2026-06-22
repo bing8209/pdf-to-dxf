@@ -204,39 +204,30 @@ class UniversalConverter(QWidget):
             return rec1[:-1] + rec2
         else: return [points[0], points[end]]
 
-    # 💡 强力数学重构：高阶服装 CAD 三次 B 样条数学流线器（彻底碾碎2cm短木棍折线）
     def _generate_b_spline(self, points, num_samples_per_segment=15):
         if len(points) < 3: return points
-        
         spline_points = []
-        # 在控制点阵列首尾进行双重虚插值，确保物理起止端点不缩水
         pts = [points[0]] + points + [points[-1]]
         
         for i in range(1, len(pts) - 2):
             p0, p1, p2, p3 = pts[i-1], pts[i], pts[i+1], pts[i+2]
-            
-            # 智能硬弯道拦截器：如果发生大于 60 度的工业急转弯，就不强行柔化，保留锐利的裁剪拐角
             v1 = (p2[0]-p1[0], p2[1]-p1[1])
             v2 = (p3[0]-p2[0], p3[1]-p2[1])
             len1 = math.sqrt(v1[0]**2 + v1[1]**2)
             len2 = math.sqrt(v2[0]**2 + v2[1]**2)
             if len1 > 0 and len2 > 0:
                 cos_angle = (v1[0]*v2[0] + v1[1]*v2[1]) / (len1 * len2)
-                if cos_angle < 0.5: # 夹角超过 60 度 
+                if cos_angle < 0.5: 
                     if p1 not in spline_points: spline_points.append(p1)
                     if p2 not in spline_points: spline_points.append(p2)
                     continue
 
-            # 标准流线区域：运行三次 B 样条矩阵基函数插值，生成绝对丝滑的水流质感长曲线
             for j in range(num_samples_per_segment):
                 t = j / num_samples_per_segment
-                
-                # B-Spline 基函数系数
                 a1 = (-t**3 + 3*t**2 - 3*t + 1) / 6.0
                 a2 = (3*t**3 - 6*t**2 + 4) / 6.0
                 a3 = (-3*t**3 + 3*t**2 + 3*t + 1) / 6.0
                 a4 = t**3 / 6.0
-                
                 qx = a1*p0[0] + a2*p1[0] + a3*p2[0] + a4*p3[0]
                 qy = a1*p0[1] + a2*p1[1] + a3*p2[1] + a4*p3[1]
                 spline_points.append((qx, qy))
@@ -244,7 +235,6 @@ class UniversalConverter(QWidget):
         spline_points.append(points[-1])
         return spline_points
 
-    # ==== 算法1：PDF 转 DXF ====
     def convert_pdf_to_dxf(self):
         pdf_path, output_dir = self.txt_pdf_input.text(), self.txt_pdf_output.text()
         if not pdf_path or not os.path.exists(pdf_path) or not output_dir: return
@@ -305,7 +295,6 @@ class UniversalConverter(QWidget):
             QMessageBox.information(self, "成功", f"PDF 转 DXF 成功！\n保存路径：{dxf_path}")
         except Exception as e: QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
-    # ==== 算法2：DXF 转 PDF ====
     def convert_dxf_to_pdf(self):
         dxf_path, output_dir = self.txt_dxf_input.text(), self.txt_dxf_output.text()
         if not dxf_path or not output_dir: return
@@ -328,7 +317,6 @@ class UniversalConverter(QWidget):
             QMessageBox.information(self, "成功", f"DXF 转 PDF 成功！\n保存路径：{pdf_path}")
         except Exception as e: QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
-    # ==== ⚙️ 终极重构模块：图论爬行 + 空间雷达自动补齐 + 三次 B 样条流线化 ====
     def convert_img_to_dxf(self):
         img_path = self.txt_img_input.text()
         output_dir = self.txt_img_output.text()
@@ -346,7 +334,6 @@ class UniversalConverter(QWidget):
             gray_img = src_qimg.convertToFormat(QImage.Format_Grayscale8)
             width, height = gray_img.width(), gray_img.height()
             
-            # 1. 骨架精细提取
             skeleton_map = [[False for _ in range(height)] for _ in range(width)]
             for y in range(6, height - 6):
                 for x in range(6, width - 6):
@@ -358,43 +345,3 @@ class UniversalConverter(QWidget):
 
                     if abs(p_right - p_left) > 12 or abs(p_down - p_up) > 12:
                         if p_center <= p_left and p_center <= p_right and p_center < 225: skeleton_map[x][y] = True
-                        elif p_center <= p_up and p_center <= p_down and p_center < 225: skeleton_map[x][y] = True
-
-            # 2. 🧠 空间雷达自动补空 + 链式拓扑寻线爬行
-            visited = [[False for _ in range(height)] for _ in range(width)]
-            all_tracks = []
-            directions = [(-1,0), (1,0), (0,-1), (0,1), (-1,-1), (-1,1), (1,-1), (1,1)]
-
-            for y in range(6, height - 6):
-                for x in range(6, width - 6):
-                    if skeleton_map[x][y] and not visited[x][y]:
-                        current_track = []
-                        cx, cy = x, y
-                        
-                        while True:
-                            visited[cx][cy] = True
-                            current_track.append((float(cx), float(height - cy)))
-                            
-                            found_next = False
-                            for dx, dy in directions:
-                                nx, ny = cx + dx, cy + dy
-                                if 0 <= nx < width and 0 <= ny < height:
-                                    if skeleton_map[nx][ny] and not visited[nx][ny]:
-                                        cx, cy = nx, ny
-                                        found_next = True
-                                        break
-                            
-                            # 🚀 雷达智能补空逻辑：如果前方遇到断头路，开启15像素半径的空间隐形桥梁搜寻
-                            if not found_next:
-                                closest_gap_pt = None
-                                min_gap_dist = 999.0
-                                # 在 15 像素范围内探测未访问的骨架
-                                for r_y in range(max(6, cy - 15), min(height - 6, cy + 15)):
-                                    for r_x in range(max(6, cx - 15), min(width - 6, cx + 15)):
-                                        if skeleton_map[r_x][r_y] and not visited[r_x][r_y]:
-                                            d = math.sqrt((r_x - cx)**2 + (r_y - cy)**2)
-                                            if d < min_gap_dist and d > 2:
-                                                min_gap_dist = d
-                                                closest_gap_pt = (r_x, r_y)
-                                
-                                # 如果探测到空缺对岸有续接线条，强行生成“
