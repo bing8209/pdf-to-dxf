@@ -53,7 +53,7 @@ class UniversalConverter(QWidget):
         
         self.tabs.addTab(self.tab1, "PDF 转 DXF")
         self.tabs.addTab(self.tab2, "DXF 转 PDF")
-        self.tabs.addTab(self.tab3, "图片转 DXF (丝滑完美版)")
+        self.tabs.addTab(self.tab3, "图片转 DXF (彻底消除锯齿版)")
         
         main_layout.addWidget(self.tabs)
         self.setLayout(main_layout)
@@ -145,7 +145,7 @@ class UniversalConverter(QWidget):
         h_layout2.addWidget(btn_dir)
         layout.addLayout(h_layout2)
         
-        btn_convert = QPushButton("消融阶梯锯齿 · 生成高丝滑度 CAD 曲线")
+        btn_convert = QPushButton("暴力消除微观锯齿 · 导出绝对平滑单股线")
         btn_convert.setStyleSheet("background-color: #a855f7; font-weight: bold; padding: 10px; font-size: 15px;")
         btn_convert.clicked.connect(self.convert_img_to_dxf)
         layout.addWidget(btn_convert)
@@ -204,32 +204,43 @@ class UniversalConverter(QWidget):
             return rec1[:-1] + rec2
         else: return [points[0], points[end]]
 
-    # 💡 新增工业级算法：高阶几何切线平滑器（用于揉平像素锯齿）
-    def _smooth_polyline_bezier(self, points, smooth_factor=0.25):
+    # 💡 强力后处理升级版：工业级滑动均值柔化滤镜（Window Smoothing Filter）
+    # 它会像用海绵一样，把前后几个像素点的坐标进行平均融合，彻底抹杀局部1-2个像素的突变毛刺
+    def _apply_window_smoothing(self, points, window_size=5):
+        if len(points) < window_size: return points
+        smoothed = []
+        half_w = window_size // 2
+        
+        # 首尾端点保持绝对锁定，防止大轮廓缩水
+        for i in range(len(points)):
+            if i < half_w or i >= len(points) - half_w:
+                smoothed.append(points[i])
+            else:
+                # 抓取当前点前后一个窗口内的所有点求数学中心值
+                sum_x, sum_y = 0.0, 0.0
+                for w in range(-half_w, half_w + 1):
+                    sum_x += points[i + w][0]
+                    sum_y += points[i + w][1]
+                smoothed.append((sum_x / window_size, sum_y / window_size))
+        return smoothed
+
+    def _smooth_polyline_bezier(self, points, smooth_factor=0.35):
         if len(points) < 3: return points
+        smoothed_points = [points[0]]
         
-        smoothed_points = []
-        smoothed_points.append(points[0])
-        
-        # 顺着折线节点的走向计算三次切线插值
         for i in range(1, len(points) - 1):
             p0, p1, p2 = points[i-1], points[i], points[i+1]
-            
-            # 计算切线方向矢量
             v1_x, v1_y = p1[0] - p0[0], p1[1] - p0[1]
             v2_x, v2_y = p2[0] - p1[0], p2[1] - p1[1]
             
-            # 融合相邻段的斜率，产生一个圆润的控制切线
             tangent_x = (v1_x + v2_x) * smooth_factor
             tangent_y = (v1_y + v2_y) * smooth_factor
             
-            # 在拐点两翼高密度插入 3 个过渡微元点，把直角弯“磨圆”
-            for t in [0.25, 0.5, 0.75]:
-                # 经典的二次至三次几何多项式过渡
+            # 在硬拐角两翼只平滑插入2个微元，避免生成过多零碎的细小多段线，进一步合并锯齿
+            for t in [0.33, 0.66]:
                 mx = p1[0] - (1 - t) * tangent_x * 0.5 + t * tangent_x * 0.5
                 my = p1[1] - (1 - t) * tangent_y * 0.5 + t * tangent_y * 0.5
                 smoothed_points.append((mx, my))
-                
             smoothed_points.append(p1)
             
         smoothed_points.append(points[-1])
@@ -319,7 +330,7 @@ class UniversalConverter(QWidget):
             QMessageBox.information(self, "成功", f"DXF 转 PDF 成功！\n保存路径：{pdf_path}")
         except Exception as e: QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
-    # ==== ⚙️ 终极模块：图论单线追踪 + 三次切线精细圆滑算法 ====
+    # ==== ⚙️ 终极后处理闭环：高强度滤波抗锯齿算法 ====
     def convert_img_to_dxf(self):
         img_path = self.txt_img_input.text()
         output_dir = self.txt_img_output.text()
@@ -329,7 +340,7 @@ class UniversalConverter(QWidget):
             return
 
         base_name = os.path.splitext(os.path.basename(img_path))[0]
-        final_dxf_path = os.path.join(output_dir, f"{base_name}_完美丝滑单线版.dxf")
+        final_dxf_path = os.path.join(output_dir, f"{base_name}_极致平滑单线版.dxf")
 
         try:
             # 1. 载入图像并提取灰度
@@ -379,32 +390,33 @@ class UniversalConverter(QWidget):
                                         break
                             if not found_next: break
                         
-                        if len(current_track) > 6:
+                        if len(current_track) > 8: # 略微提高最短线条过滤阈值，去掉孤立碎碎点
                             all_tracks.append(current_track)
 
-            # 4. 🚀 关键进化：双重消柔后处理（先压缩、再磨圆）
+            # 4. 🚀 关键升级：强力双重消柔后处理（滑动平均去刺 + 强力剪枝）
             doc = ezdxf.new('R2010')
             doc.header['$MEASUREMENT'], doc.header['$INSUNITS'] = 1, 4
             msp = doc.modelspace()
 
             for track in all_tracks:
-                # 步骤 A：利用 Douglas-Peucker 提取出主骨架控制点，消除微小的像素抖动毛刺
-                backbone_pts = self._douglas_peucker(track, epsilon=1.2)
+                # 步骤 A：先通过滑动窗口均值滤波器，直接在原始像素点序列上把微小抖动的硬锯齿全部“揉圆”
+                smoothed_pixels = self._apply_window_smoothing(track, window_size=7) # window_size=7 具备强力的去噪平滑能力
+                
+                # 步骤 B：强力降采样剪枝。将阈值从之前的 1.2 放大到 4.5
+                # 这会强制剥离掉所有微观层面的折线段，只在真正发生宏观转向时才建立 CAD 节点
+                backbone_pts = self._douglas_peucker(smoothed_pixels, epsilon=4.5)
                 
                 if len(backbone_pts) > 2:
-                    # 步骤 B：使用样条切线平滑器，将硬邦邦的短折线节点变成圆润的 CAD 曲线
-                    smooth_cad_line = self._smooth_polyline_bezier(backbone_pts, smooth_factor=0.3)
-                    
+                    # 步骤 C：最后用贝塞尔样条切线做最后的流畅上色
+                    smooth_cad_line = self._smooth_polyline_bezier(backbone_pts, smooth_factor=0.35)
                     if len(smooth_cad_line) > 1:
-                        # 写入 DXF 的全流畅多段线
                         msp.add_lwpolyline(smooth_cad_line, dxfattribs={'color': 7, 'layer': 'CAD_SMOOTH_LINE'})
                 elif len(backbone_pts) == 2:
-                    # 如果本来就是一根直线，原样输出
                     msp.add_lwpolyline(backbone_pts, dxfattribs={'color': 7, 'layer': 'CAD_SMOOTH_LINE'})
 
             doc.saveas(final_dxf_path)
 
-            QMessageBox.information(self, "成功", f"图纸输出大功告成！\n【完美丝滑单线版】：\n1. 成功过滤了像素方格带来的小锯齿短线段！\n2. 曲线转角处已自动做三次切线化圆润处理，可以直接送入工业打版软件！\n路径：{final_dxf_path}")
+            QMessageBox.information(self, "成功", f"图纸输出大功告成！\n【极致平滑单线版】：\n1. 引入了工业级滑动窗口均值滤波，强行揉平了照片自带的微跳跃锯齿。\n2. 降采样步长已最大化，短折线基本完全退化合并为了极度流畅的大主干弧线。")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"转换失败：\n{str(e)}")
 
